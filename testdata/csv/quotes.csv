@@ -1,0 +1,5 @@
+a,b,c
+"plain","with ""doubled"" quotes","x,y"
+"ab"c,ab"c,"NA"
+"",  "lead",""""
+"a""b""",tail"q",
