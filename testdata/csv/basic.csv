@@ -1,0 +1,4 @@
+id,x,name,flag
+1,0.5,alpha,True
+2,1.25,beta,False
+3,-3.0,gamma,True

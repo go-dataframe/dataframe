@@ -1,0 +1,531 @@
+{
+ "versions": {
+  "pandas": "3.0.6",
+  "pyarrow": "26.0.0"
+ },
+ "fixtures": {
+  "types": {
+   "columns": [
+    {
+     "name": "f64",
+     "dtype": "float64",
+     "values": [
+      1.5,
+      null,
+      -0.25,
+      1e+300,
+      0.0,
+      -1.0,
+      3.0
+     ]
+    },
+    {
+     "name": "f32",
+     "dtype": "float32",
+     "values": [
+      1.5,
+      2.25,
+      null,
+      -4.0,
+      0.5,
+      8.0,
+      0.0
+     ]
+    },
+    {
+     "name": "i8",
+     "dtype": "int8",
+     "values": [
+      -128,
+      127,
+      0,
+      1,
+      -1,
+      5,
+      6
+     ]
+    },
+    {
+     "name": "i16",
+     "dtype": "int16",
+     "values": [
+      -32768,
+      32767,
+      0,
+      1,
+      -1,
+      5,
+      6
+     ]
+    },
+    {
+     "name": "i32",
+     "dtype": "int32",
+     "values": [
+      -2147483648,
+      2147483647,
+      0,
+      1,
+      -1,
+      5,
+      6
+     ]
+    },
+    {
+     "name": "i64",
+     "dtype": "int64",
+     "values": [
+      -9223372036854775808,
+      9223372036854775807,
+      0,
+      1,
+      -1,
+      5,
+      6
+     ]
+    },
+    {
+     "name": "u8",
+     "dtype": "uint8",
+     "values": [
+      0,
+      255,
+      1,
+      2,
+      3,
+      4,
+      5
+     ]
+    },
+    {
+     "name": "u16",
+     "dtype": "uint16",
+     "values": [
+      0,
+      65535,
+      1,
+      2,
+      3,
+      4,
+      5
+     ]
+    },
+    {
+     "name": "u32",
+     "dtype": "uint32",
+     "values": [
+      0,
+      4294967295,
+      1,
+      2,
+      3,
+      4,
+      5
+     ]
+    },
+    {
+     "name": "u64",
+     "dtype": "uint64",
+     "values": [
+      0,
+      18446744073709551615,
+      1,
+      2,
+      3,
+      4,
+      5
+     ]
+    },
+    {
+     "name": "b",
+     "dtype": "bool",
+     "values": [
+      true,
+      false,
+      true,
+      true,
+      false,
+      false,
+      true
+     ]
+    },
+    {
+     "name": "b_na",
+     "dtype": "bool",
+     "values": [
+      true,
+      null,
+      false,
+      true,
+      null,
+      false,
+      true
+     ]
+    },
+    {
+     "name": "i_na",
+     "dtype": "int64",
+     "values": [
+      1,
+      null,
+      3,
+      -4,
+      null,
+      6,
+      7
+     ]
+    },
+    {
+     "name": "s",
+     "dtype": "string",
+     "values": [
+      "alpha",
+      null,
+      "",
+      "ünïcödé",
+      "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "b",
+      "c"
+     ]
+    },
+    {
+     "name": "cat",
+     "dtype": "category",
+     "values": [
+      "lo",
+      "hi",
+      null,
+      "lo",
+      "mid",
+      "hi",
+      "lo"
+     ]
+    },
+    {
+     "name": "ts",
+     "dtype": "datetime",
+     "values": [
+      1577836800000000000,
+      null,
+      -1,
+      9223286400000000000,
+      0,
+      951825600000000000,
+      -9223286400000000000
+     ]
+    },
+    {
+     "name": "ts_utc",
+     "dtype": "datetime",
+     "values": [
+      1577836800000000000,
+      1622550896789000000,
+      null,
+      946684799000000000,
+      1577836800000000000,
+      1577923200000000000,
+      1578009600000000000
+     ]
+    },
+    {
+     "name": "ts_paris",
+     "dtype": "datetime",
+     "values": [
+      1577836800000000000,
+      1593561600000000000,
+      1585445400000000000,
+      null,
+      1603582200000000000,
+      1577833200000000000,
+      1577919600000000000
+     ]
+    },
+    {
+     "name": "ts_ms",
+     "dtype": "datetime",
+     "values": [
+      1577836800000000000,
+      1577923200000000000,
+      null,
+      1578096000000000000,
+      1578182400000000000,
+      1578268800000000000,
+      1578355200000000000
+     ]
+    },
+    {
+     "name": "ts_s",
+     "dtype": "datetime",
+     "values": [
+      1577836800000000000,
+      null,
+      1578009600000000000,
+      1578096000000000000,
+      1578182400000000000,
+      1578268800000000000,
+      1578355200000000000
+     ]
+    }
+   ],
+   "index": {
+    "range": true,
+    "name": ""
+   },
+   "rows": 7
+  },
+  "named_index": {
+   "columns": [
+    {
+     "name": "v",
+     "dtype": "float64",
+     "values": [
+      1.0,
+      2.0,
+      3.0
+     ]
+    }
+   ],
+   "index": {
+    "range": false,
+    "levels": [
+     {
+      "name": "key",
+      "dtype": "string",
+      "values": [
+       "a",
+       "b",
+       "c"
+      ]
+     }
+    ]
+   },
+   "rows": 3
+  },
+  "unnamed_index": {
+   "columns": [
+    {
+     "name": "v",
+     "dtype": "int64",
+     "values": [
+      10,
+      20,
+      30
+     ]
+    }
+   ],
+   "index": {
+    "range": false,
+    "levels": [
+     {
+      "name": "",
+      "dtype": "int64",
+      "values": [
+       7,
+       3,
+       5
+      ]
+     }
+    ]
+   },
+   "rows": 3
+  },
+  "range_index": {
+   "columns": [
+    {
+     "name": "v",
+     "dtype": "string",
+     "values": [
+      "x",
+      "y",
+      "z",
+      "w"
+     ]
+    }
+   ],
+   "index": {
+    "range": false,
+    "levels": [
+     {
+      "name": "r",
+      "dtype": "int64",
+      "values": [
+       10,
+       15,
+       20,
+       25
+      ]
+     }
+    ]
+   },
+   "rows": 4
+  },
+  "named_range_index": {
+   "columns": [
+    {
+     "name": "v",
+     "dtype": "int64",
+     "values": [
+      1,
+      2
+     ]
+    }
+   ],
+   "index": {
+    "range": true,
+    "name": "row"
+   },
+   "rows": 2
+  },
+  "multi_index": {
+   "columns": [
+    {
+     "name": "v",
+     "dtype": "float64",
+     "values": [
+      1.0,
+      null,
+      3.0,
+      4.0
+     ]
+    }
+   ],
+   "index": {
+    "range": false,
+    "levels": [
+     {
+      "name": "letter",
+      "dtype": "string",
+      "values": [
+       "a",
+       "a",
+       "b",
+       "b"
+      ]
+     },
+     {
+      "name": "",
+      "dtype": "int64",
+      "values": [
+       1,
+       2,
+       1,
+       2
+      ]
+     }
+    ]
+   },
+   "rows": 4
+  },
+  "datetime_index": {
+   "columns": [
+    {
+     "name": "v",
+     "dtype": "int64",
+     "values": [
+      1,
+      2,
+      3
+     ]
+    }
+   ],
+   "index": {
+    "range": false,
+    "levels": [
+     {
+      "name": "day",
+      "dtype": "datetime",
+      "values": [
+       1704067200000000000,
+       1704153600000000000,
+       1704240000000000000
+      ]
+     }
+    ]
+   },
+   "rows": 3
+  },
+  "empty": {
+   "columns": [
+    {
+     "name": "f",
+     "dtype": "float64",
+     "values": []
+    },
+    {
+     "name": "s",
+     "dtype": "string",
+     "values": []
+    }
+   ],
+   "index": {
+    "range": true,
+    "name": ""
+   },
+   "rows": 0
+  },
+  "batches": {
+   "rows": 5,
+   "index": {
+    "range": true,
+    "name": ""
+   },
+   "columns": [
+    {
+     "name": "d",
+     "dtype": "category",
+     "values": [
+      "p",
+      "q",
+      null,
+      "q",
+      "r"
+     ]
+    },
+    {
+     "name": "ls",
+     "dtype": "string",
+     "values": [
+      "one",
+      null,
+      "three",
+      "four",
+      "five"
+     ]
+    },
+    {
+     "name": "n",
+     "dtype": "string",
+     "values": [
+      null,
+      null,
+      null,
+      null,
+      null
+     ]
+    },
+    {
+     "name": "u",
+     "dtype": "uint16",
+     "values": [
+      1,
+      null,
+      3,
+      4,
+      5
+     ]
+    },
+    {
+     "name": "t",
+     "dtype": "datetime",
+     "values": [
+      0,
+      1000,
+      null,
+      3000,
+      4000
+     ]
+    }
+   ]
+  }
+ }
+}
