@@ -1,10 +1,18 @@
+<p align="center"><img src="https://raw.githubusercontent.com/go-dataframe/brand/main/social/go-dataframe.png" alt="go-dataframe/dataframe" width="720"></p>
+
 # dataframe
+
+[![Docs](https://img.shields.io/badge/docs-hugo%20%2B%20hextra-A93A82)](https://go-dataframe.github.io/docs/)
+[![pkg.go.dev](https://img.shields.io/badge/pkg.go.dev-dataframe-007d9c?logo=go&logoColor=white)](https://pkg.go.dev/github.com/go-dataframe/dataframe)
+[![License](https://img.shields.io/badge/license-BSD--3--Clause-A93A82)](LICENSE)
 
 Labelled, columnar tables in pure Go (CGO=0): `Series`, `DataFrame` and
 `Index`, with selection, missing data, group-by, joins, reshaping, time
 series, a fast CSV reader, Arrow IPC and Parquet, notebook display and
 plots. Numeric columns are [go-ndarray](https://github.com/go-ndarray/ndarray)
 arrays, handed out without copying.
+
+🌐 **[Website](https://go-dataframe.github.io)** · 📚 **[Documentation](https://go-dataframe.github.io/docs/)**
 
 pandas is the behavioural reference: the operations below give pandas'
 answers (values, dtypes, index, row order), checked against pandas 3.0 on
