@@ -17,10 +17,11 @@ var (
 	// valid afterwards.
 	Series func(name string, data any, valid []uint64, datetime bool) any
 
-	// Categorical returns a category series named name over codes (-1
-	// missing) into levels, sharing codes: the missing codes are rewritten
-	// in place.
-	Categorical func(name string, codes []int32, levels []string) any
+	// Categorical returns a category series named name over codes into
+	// levels, sharing codes, each in range and 0 where missing, with the
+	// validity bitmap valid (nil when nothing is missing), shared too, with
+	// its bits past the last value set.
+	Categorical func(name string, codes []int32, levels []string, valid []uint64) any
 
 	// Strings returns a string series' storage and validity bitmap, shared
 	// (read only), and false for any other dtype. A missing slot may hold

@@ -15,6 +15,7 @@ import (
 	"github.com/apache/arrow-go/v18/arrow/array"
 	"github.com/apache/arrow-go/v18/arrow/memory"
 	"github.com/go-dataframe/dataframe"
+	"github.com/go-dataframe/dataframe/internal/rawcol"
 	"github.com/go-ndarray/ndarray"
 )
 
@@ -33,6 +34,13 @@ func identical(t *testing.T, where string, got, want *dataframe.DataFrame) {
 		}
 		if !slices.Equal(g.Strings(), w.Strings()) {
 			t.Errorf("%s:%s: text differs", where, g.Name())
+		}
+		if g.DType() == dataframe.Category {
+			gc, gv, gl := rawcol.Codes(g)
+			wc, wv, wl := rawcol.Codes(w)
+			if !slices.Equal(gc, wc) || !slices.Equal(gv, wv) || !slices.Equal(gl, wl) {
+				t.Errorf("%s:%s: category storage differs", where, g.Name())
+			}
 		}
 		ga, gerr := g.Values()
 		wa, werr := w.Values()
@@ -195,5 +203,28 @@ func TestPeriodIndex(t *testing.T) {
 	gl, _ := got.Index().Level(0)
 	if !slices.Equal(gl.Strings(), lv.Strings()) {
 		t.Errorf("period labels %q, want %q", gl.Strings(), lv.Strings())
+	}
+}
+
+// A null dictionary entry makes the values coded to it missing, even when
+// no index is null.
+func TestDictionaryNullEntry(t *testing.T) {
+	vb := array.NewStringBuilder(memory.DefaultAllocator)
+	defer vb.Release()
+	vb.AppendValues([]string{"a", "", "b"}, []bool{true, false, true})
+	dict := vb.NewArray()
+	defer dict.Release()
+	idx := fixed(arrow.PrimitiveTypes.Int32, []int32{2, 1, 0}, nil, 3)
+	defer idx.Release()
+	dt := &arrow.DictionaryType{IndexType: arrow.PrimitiveTypes.Int32, ValueType: arrow.BinaryTypes.String}
+	col := array.NewDictionaryArray(dt, idx, dict)
+	defer col.Release()
+	s, err := toSeries(arrow.Field{Name: "d", Type: dt}, []arrow.Array{col}, 3, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	equalItems(t, "null entry", s.Items(), []any{"b", nil, "a"})
+	if codes, _, _ := rawcol.Codes(s); !slices.Equal(codes, []int32{1, 0, 0}) {
+		t.Errorf("codes %v", codes)
 	}
 }

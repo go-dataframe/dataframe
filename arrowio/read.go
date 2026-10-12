@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"math"
+	mbits "math/bits"
 	"slices"
 	"unsafe"
 
@@ -150,7 +151,7 @@ func toSeries(f arrow.Field, chunks []arrow.Array, n int, own bool) (*dataframe.
 	case *arrow.StringType, *arrow.LargeStringType:
 		return raw(name, readStrings(chunks, n, own), valid, false), nil
 	case *arrow.DictionaryType:
-		return categories(name, t, n, chunks)
+		return categories(name, t, n, chunks, own)
 	case *arrow.NullType:
 		// pyarrow writes an object column of nothing but None as nulls;
 		// pandas reads it back as an object column, here a string one.
@@ -225,13 +226,32 @@ func floatSeries[T float32 | float64](name string, dt ndarray.DType, n int, vali
 	return dataframe.NewSeries(name, a)
 }
 
-// unpackBits expands the Arrow bitmap bm, from bit off on, into d.
+// unpackBits expands the Arrow bitmap bm, from bit off on, into d: eight
+// bools at a time from a byte-aligned start, through spread.
 func unpackBits(d []bool, bm []byte, off int) {
-	for i := range d {
+	i := 0
+	if off&7 == 0 {
+		bm = bm[off>>3:]
+		for ; i+8 <= len(d); i += 8 {
+			*(*[8]bool)(d[i:]) = spread[bm[i>>3]]
+		}
+	}
+	for ; i < len(d); i++ {
 		j := off + i
 		d[i] = bm[j>>3]>>(uint(j)&7)&1 == 1
 	}
 }
+
+// spread maps a byte to the eight bools of its bits, least significant
+// first.
+var spread = func() (t [256][8]bool) {
+	for b := range t {
+		for k := range t[b] {
+			t[b][k] = b>>k&1 == 1
+		}
+	}
+	return t
+}()
 
 // nullBits returns the validity bitmap of the chunks laid end to end, or
 // nil when none has a null. The chunks' Arrow bitmaps are copied whole into
@@ -267,12 +287,13 @@ func isValid(v []uint64, i int) bool { return v == nil || v[i>>6]>>(uint(i)&63)&
 
 // nanFill writes NaN in the slots of null floats.
 func nanFill[T float32 | float64](d []T, valid []uint64) {
-	if valid == nil {
-		return
-	}
-	for i := range d {
-		if !isValid(valid, i) {
-			d[i] = T(math.NaN())
+	for w, bits := range valid {
+		for bits != math.MaxUint64 {
+			b := mbits.TrailingZeros64(^bits)
+			bits |= 1 << uint(b)
+			if i := w<<6 + b; i < len(d) {
+				d[i] = T(math.NaN())
+			}
 		}
 	}
 }
@@ -367,8 +388,10 @@ func dictStrings(name string, chunks []arrow.Array, n int, own bool) *dataframe.
 
 // categories reads a dictionary column with string values as a category
 // column. Chunks with different dictionaries are unified: the categories
-// are the first chunk's, then each new value in order of appearance.
-func categories(name string, t *arrow.DictionaryType, n int, chunks []arrow.Array) (*dataframe.Series, error) {
+// are the first chunk's, then each new value in order of appearance. With
+// own, a column in one chunk of int32 indices whose dictionary is already
+// the categories in order keeps the indices buffer as its codes.
+func categories(name string, t *arrow.DictionaryType, n int, chunks []arrow.Array, own bool) (*dataframe.Series, error) {
 	switch t.ValueType.(type) {
 	case *arrow.StringType, *arrow.LargeStringType:
 	default:
@@ -376,16 +399,16 @@ func categories(name string, t *arrow.DictionaryType, n int, chunks []arrow.Arra
 	}
 	var levels []string
 	pos := map[string]int32{}
-	codes := make([]int32, n)
-	off := 0
-	for _, c := range chunks {
-		d := c.(*array.Dictionary)
-		dict := d.Dictionary()
+	remaps := make([][]int32, len(chunks))
+	identity, dictNulls := true, false
+	for c, ch := range chunks {
+		dict := ch.(*array.Dictionary).Dictionary()
 		values := readStrings([]arrow.Array{dict}, dict.Len(), false)
 		remap := make([]int32, len(values))
 		for k, v := range values {
 			if dict.IsNull(k) {
 				remap[k] = -1
+				dictNulls = true
 				continue
 			}
 			p, ok := pos[v]
@@ -395,37 +418,77 @@ func categories(name string, t *arrow.DictionaryType, n int, chunks []arrow.Arra
 				levels = append(levels, v)
 			}
 			remap[k] = p
+			identity = identity && p == int32(k)
 		}
-		out := codes[off : off+d.Len()]
-		switch idx := d.Indices().(type) {
-		case *array.Int8:
-			remapCodes(out, idx.Int8Values(), remap)
-		case *array.Int16:
-			remapCodes(out, idx.Int16Values(), remap)
-		case *array.Int32:
-			remapCodes(out, idx.Int32Values(), remap)
-		case *array.Int64:
-			remapCodes(out, idx.Int64Values(), remap)
-		case *array.Uint8:
-			remapCodes(out, idx.Uint8Values(), remap)
-		case *array.Uint16:
-			remapCodes(out, idx.Uint16Values(), remap)
-		case *array.Uint32:
-			remapCodes(out, idx.Uint32Values(), remap)
-		case *array.Uint64:
-			remapCodes(out, idx.Uint64Values(), remap)
+		remaps[c] = remap
+	}
+	valid := nullBits(chunks, n)
+	var codes []int32
+	if idx, ok := adopt(own && identity && !dictNulls && t.IndexType.ID() == arrow.INT32, chunks, int32Indices); ok {
+		// The indices are the codes already; only their null slots, which
+		// may hold anything, need a 0.
+		codes = idx
+	} else {
+		codes = make([]int32, n)
+		off := 0
+		for c, ch := range chunks {
+			d := ch.(*array.Dictionary)
+			out := codes[off : off+d.Len()]
+			switch idx := d.Indices().(type) {
+			case *array.Int8:
+				remapCodes(out, idx.Int8Values(), remaps[c])
+			case *array.Int16:
+				remapCodes(out, idx.Int16Values(), remaps[c])
+			case *array.Int32:
+				remapCodes(out, idx.Int32Values(), remaps[c])
+			case *array.Int64:
+				remapCodes(out, idx.Int64Values(), remaps[c])
+			case *array.Uint8:
+				remapCodes(out, idx.Uint8Values(), remaps[c])
+			case *array.Uint16:
+				remapCodes(out, idx.Uint16Values(), remaps[c])
+			case *array.Uint32:
+				remapCodes(out, idx.Uint32Values(), remaps[c])
+			case *array.Uint64:
+				remapCodes(out, idx.Uint64Values(), remaps[c])
+			}
+			off += d.Len()
 		}
-		if d.NullN() > 0 {
-			for i := range out {
-				if d.IsNull(i) {
-					out[i] = -1
+	}
+	if dictNulls {
+		// A null dictionary entry is a missing value too.
+		for i, k := range codes {
+			if k < 0 {
+				if valid == nil {
+					valid = allValid(n)
 				}
+				valid[i>>6] &^= 1 << (uint(i) & 63)
 			}
 		}
-		off += d.Len()
 	}
-	// The codes are fresh, and each one is in range: hand them over.
-	return rawcol.Categorical(name, codes, levels).(*dataframe.Series), nil
+	zeroMissing(codes, valid)
+	return rawcol.Categorical(name, codes, levels, valid).(*dataframe.Series), nil
+}
+
+// int32Indices returns the int32 indices of a dictionary chunk.
+func int32Indices(c arrow.Array) []int32 {
+	return c.(*array.Dictionary).Indices().(*array.Int32).Int32Values()
+}
+
+// zeroMissing writes 0 in the slots valid marks missing.
+func zeroMissing(codes []int32, valid []uint64) {
+	if valid == nil {
+		return
+	}
+	for w, bits := range valid {
+		for bits != math.MaxUint64 {
+			b := mbits.TrailingZeros64(^bits)
+			bits |= 1 << uint(b)
+			if i := w<<6 + b; i < len(codes) {
+				codes[i] = 0
+			}
+		}
+	}
 }
 
 // remapCodes maps dictionary indices to category codes. A null slot may

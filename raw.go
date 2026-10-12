@@ -59,20 +59,12 @@ func rawCol[T comparable](dt DType, data []T) *col[T] {
 }
 
 // rawCategorical is NewCategorical sharing codes, which are known to be in
-// range.
-func rawCategorical(name string, codes []int32, levels []string) any {
+// range, with 0 in the missing slots, which valid marks (nil: none).
+func rawCategorical(name string, codes []int32, levels []string, valid []uint64) any {
 	c := rawCol(Category, codes)
 	c.levels = levels
 	c.o = catOps(levels)
-	for i, k := range codes {
-		if k < 0 {
-			if c.valid == nil {
-				c.valid = allValid(len(codes))
-			}
-			c.valid.clear(i)
-			codes[i] = 0
-		}
-	}
+	c.valid = valid
 	return &Series{name: name, index: NewRangeIndex(len(codes)), c: c}
 }
 
