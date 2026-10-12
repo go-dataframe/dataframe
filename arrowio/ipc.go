@@ -80,7 +80,7 @@ func ReadIPCFile(r ReadAtSeeker, opts ...Option) (*dataframe.DataFrame, error) {
 		rec.Retain()
 		recs = append(recs, rec)
 	}
-	return FromRecords(fr.Schema(), recs)
+	return fromRecords(fr.Schema(), recs, owns(cfg.mem))
 }
 
 // ReadIPCStream reads a frame from the Arrow IPC streaming format, every
@@ -102,7 +102,7 @@ func ReadIPCStream(r io.Reader, opts ...Option) (*dataframe.DataFrame, error) {
 	if err := sr.Err(); err != nil {
 		return nil, err
 	}
-	return FromRecords(sr.Schema(), recs)
+	return fromRecords(sr.Schema(), recs, owns(cfg.mem))
 }
 
 func releaseAll(recs *[]arrow.RecordBatch) {

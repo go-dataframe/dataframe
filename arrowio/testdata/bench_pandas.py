@@ -6,13 +6,25 @@ operation, each the mean of REPS repetitions:
     write_parquet read_parquet write_ipc read_ipc
 
     uv run --with pandas --with numpy --with pyarrow python bench_pandas.py
+
+With THREADS=1 in the environment, pyarrow runs on one thread (its CPU and
+I/O pools sized 1, use_threads=False on the reads), to compare with the Go
+side under GOMAXPROCS=1; by default pyarrow uses its thread pools.
 """
 
 import io
+import os
 import time
 
 import numpy as np
 import pandas as pd
+import pyarrow as pa
+
+SINGLE = os.environ.get("THREADS") == "1"
+if SINGLE:
+    pa.set_cpu_count(1)
+    pa.set_io_thread_count(1)
+READ = {"use_threads": False} if SINGLE else {}
 
 N = 1_000_000
 REPS = 3
@@ -47,7 +59,7 @@ fe = io.BytesIO()
 df.reset_index(drop=True).to_feather(fe, compression="uncompressed")
 
 w_pq = timed(lambda: df.to_parquet(io.BytesIO(), engine="pyarrow"))
-r_pq = timed(lambda: pd.read_parquet(io.BytesIO(pq.getvalue()), engine="pyarrow"))
+r_pq = timed(lambda: pd.read_parquet(io.BytesIO(pq.getvalue()), engine="pyarrow", **READ))
 w_fe = timed(lambda: df.to_feather(io.BytesIO(), compression="uncompressed"))
-r_fe = timed(lambda: pd.read_feather(io.BytesIO(fe.getvalue())))
+r_fe = timed(lambda: pd.read_feather(io.BytesIO(fe.getvalue()), **READ))
 print(f"{w_pq:.1f} {r_pq:.1f} {w_fe:.1f} {r_fe:.1f}")

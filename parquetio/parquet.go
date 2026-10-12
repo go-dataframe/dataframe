@@ -12,6 +12,7 @@ import (
 	"github.com/apache/arrow-go/v18/parquet/pqarrow"
 	"github.com/go-dataframe/dataframe"
 	"github.com/go-dataframe/dataframe/arrowio"
+	"github.com/go-dataframe/dataframe/internal/rawcol"
 )
 
 // WriteParquet writes a frame as a Parquet file, laid out as
@@ -94,7 +95,11 @@ func ReadParquet(r arrowio.ReadAtSeeker, opts ...Option) (*dataframe.DataFrame, 
 	for i := range cols {
 		cols[i].Release()
 	}
-	return arrowio.FromTable(withMeta)
+	df, err := rawcol.FromOwnedTable(withMeta, cfg.mem)
+	if err != nil {
+		return nil, err
+	}
+	return df.(*dataframe.DataFrame), nil
 }
 
 // ReadParquetFile reads the Parquet file at path as ReadParquet does.
