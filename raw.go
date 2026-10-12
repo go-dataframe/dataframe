@@ -84,10 +84,7 @@ func rawStrings(s any) ([]string, []uint64, bool) {
 	return c.data, c.valid, true
 }
 
-func rawCodes(s any) ([]int32, []uint64, []string, bool) {
-	c, ok := s.(*Series).c.(*col[int32])
-	if !ok || c.dt != Category {
-		return nil, nil, nil, false
-	}
-	return c.data, c.valid, c.levels, true
+func rawCodes(s any) ([]int32, []uint64, []string) {
+	c := s.(*Series).c.(*col[int32])
+	return c.data, c.valid, c.levels
 }

@@ -178,3 +178,22 @@ func TestOwns(t *testing.T) {
 		t.Error("owns")
 	}
 }
+
+// A period index is written as its formatted values, read back as strings.
+func TestPeriodIndex(t *testing.T) {
+	df := dataframe.Must(allTypes(t).SetIndex("ts"))
+	df = dataframe.Must(dataframe.Must(df.Head(3).ResetIndex(false).SetIndex("ts")).ToPeriod("M"))
+	lv, _ := df.Index().Level(0)
+	if lv.DType() != dataframe.Period {
+		t.Fatalf("index dtype %v", lv.DType())
+	}
+	var b bytes.Buffer
+	if err := WriteIPCFile(&b, df); err != nil {
+		t.Fatal(err)
+	}
+	got := dataframe.Must(ReadIPCFile(bytes.NewReader(b.Bytes())))
+	gl, _ := got.Index().Level(0)
+	if !slices.Equal(gl.Strings(), lv.Strings()) {
+		t.Errorf("period labels %q, want %q", gl.Strings(), lv.Strings())
+	}
+}

@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"math"
+	"slices"
 	"unsafe"
 
 	"github.com/apache/arrow-go/v18/arrow"
@@ -17,9 +18,9 @@ import (
 )
 
 func init() {
-	rawcol.FromOwnedTable = func(tbl any, mem memory.Allocator) (any, error) {
+	rawcol.FromOwnedTable = func(tbl any, mem memory.Allocator, asString []int) (any, error) {
 		t := tbl.(arrow.Table)
-		return fromChunks(t.Schema(), tableChunks(t), int(t.NumRows()), owns(mem))
+		return fromChunks(t.Schema(), tableChunks(t), int(t.NumRows()), owns(mem), asString...)
 	}
 }
 
@@ -79,15 +80,22 @@ func tableChunks(tbl arrow.Table) [][]arrow.Array {
 // fromChunks converts the columns' chunks to a frame. With own, a column
 // held in one chunk keeps that chunk's buffers rather than copying them:
 // the caller then gives the buffers up, which only a reader that made them
-// with the Go allocator can do (see owns).
-func fromChunks(schema *arrow.Schema, chunks [][]arrow.Array, n int, own bool) (*dataframe.DataFrame, error) {
+// with the Go allocator can do (see owns). The columns at the positions
+// asString are dictionaries of strings to read as string columns.
+func fromChunks(schema *arrow.Schema, chunks [][]arrow.Array, n int, own bool, asString ...int) (*dataframe.DataFrame, error) {
 	spec, err := decodePandas(schema)
 	if err != nil {
 		return nil, err
 	}
 	cols := make([]dataframe.Column, len(chunks))
 	for i, f := range schema.Fields() {
-		s, err := toSeries(f, chunks[i], n, own)
+		var s *dataframe.Series
+		var err error
+		if f.Type.ID() == arrow.DICTIONARY && slices.Contains(asString, i) {
+			s = dictStrings(f.Name, chunks[i], n, own)
+		} else {
+			s, err = toSeries(f, chunks[i], n, own)
+		}
 		if err != nil {
 			return nil, fmt.Errorf("column %q: %w", f.Name, err)
 		}
@@ -335,6 +343,26 @@ func sliceStrings[O int32 | int64](out []string, offs []O, b []byte, own bool) {
 	for i := range len(offs) - 1 {
 		out[i] = buf[offs[i]-base : offs[i+1]-base]
 	}
+}
+
+// dictStrings reads chunks of dictionary<int32, utf8 or large_utf8> as a
+// string column, each value sharing its dictionary entry's bytes.
+func dictStrings(name string, chunks []arrow.Array, n int, own bool) *dataframe.Series {
+	valid := nullBits(chunks, n)
+	out := make([]string, n)
+	off := 0
+	for _, c := range chunks {
+		d := c.(*array.Dictionary)
+		values := readStrings([]arrow.Array{d.Dictionary()}, d.Dictionary().Len(), own)
+		idx := d.Indices().(*array.Int32).Int32Values()
+		for i, k := range idx {
+			if isValid(valid, off+i) {
+				out[off+i] = values[k]
+			}
+		}
+		off += d.Len()
+	}
+	return raw(name, out, valid, false)
 }
 
 // categories reads a dictionary column with string values as a category

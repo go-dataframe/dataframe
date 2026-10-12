@@ -28,13 +28,14 @@ var (
 	Strings func(s any) (data []string, valid []uint64, ok bool)
 
 	// Codes returns a category series' codes, validity bitmap and levels,
-	// shared (read only), and false for any other dtype. A missing slot may
-	// hold any code.
-	Codes func(s any) (codes []int32, valid []uint64, levels []string, ok bool)
+	// shared (read only). A missing slot may hold any code.
+	Codes func(s any) (codes []int32, valid []uint64, levels []string)
 )
 
 // FromOwnedTable converts an arrow.Table read with the allocator mem, which
 // the caller owns and gives up, to a *dataframe.DataFrame, as
 // arrowio.FromTable does, letting the frame keep the table's buffers where
-// that is safe. Package arrowio sets it.
-var FromOwnedTable func(tbl any, mem memory.Allocator) (any, error)
+// that is safe. The columns at the positions asString are dictionary
+// arrays of strings read for string columns: they become string columns,
+// not category ones. Package arrowio sets it.
+var FromOwnedTable func(tbl any, mem memory.Allocator, asString []int) (any, error)
