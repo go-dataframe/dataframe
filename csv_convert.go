@@ -304,13 +304,14 @@ func (st *colState) reparseFloats(g, rows int) {
 // dateChunk parses chunk g as instants; strict makes a bad value an error.
 func (st *colState) dateChunk(g int, strict bool) {
 	cv, o, off := st.cv, st.cv.groups[g], st.cv.offs[g]
+	p := newTimeParser(cv.cfg.dateFormat)
 	for r := range o.nrec {
 		s, ok := cv.t.field(o, r, st.sp.j)
 		if !ok || cv.isNA(s) {
 			st.missing(g, r)
 			continue
 		}
-		ns, err := parseTime(s, cv.cfg.dateFormat)
+		ns, err := p.parse(s)
 		if err != nil {
 			st.flags[g] |= fFail
 			if strict {

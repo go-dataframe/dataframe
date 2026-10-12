@@ -1,6 +1,9 @@
 package dataframe
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 type cmpOp uint8
 
@@ -86,13 +89,21 @@ func compareCols(op cmpOp, a, b column) (*col[bool], error) {
 }
 
 // fastCompare handles a float64 or int64 column against a float64 or int64
-// scalar with tight loops, the common filter.
+// scalar, and a string column against a string, with tight loops, the
+// common filters.
 func fastCompare(op cmpOp, a, b column, out []bool) bool {
 	if b.len() != 1 || b.isNA(0) {
 		return false
 	}
 	var x float64
 	switch p := b.(type) {
+	case *col[string]:
+		s, ok := a.(*col[string])
+		if !ok {
+			return false
+		}
+		parallel(len(out), func(lo, hi int) { cmpStrings(op, s.data[lo:hi], s.valid, lo, p.data[0], out[lo:hi]) })
+		return true
 	case *col[float64]:
 		x = p.data[0]
 	case *col[int64]:
@@ -118,6 +129,33 @@ func fastCompare(op cmpOp, a, b column, out []bool) bool {
 		return true
 	}
 	return false
+}
+
+// cmpStrings compares d, rows lo.. of a string column with validity valid,
+// to x. A missing value compares false, except with !=, as compareCols
+// has it.
+func cmpStrings(op cmpOp, d []string, valid bitmap, lo int, x string, out []bool) {
+	switch op {
+	case cmpEq:
+		for i, v := range d {
+			out[i] = v == x
+		}
+	case cmpNe:
+		for i, v := range d {
+			out[i] = v != x
+		}
+	default:
+		for i, v := range d {
+			out[i] = op.holds(strings.Compare(v, x))
+		}
+	}
+	if valid != nil {
+		for i := range d {
+			if !valid.get(lo + i) {
+				out[i] = op == cmpNe
+			}
+		}
+	}
 }
 
 func cmpLoop[T float64 | int64](op cmpOp, d []T, x T, out []bool) {
@@ -240,6 +278,15 @@ func (s *Series) IsIn(values ...any) (*Series, error) {
 	if err != nil {
 		return nil, err
 	}
+	if c, ok := s.c.(*col[string]); ok {
+		if set, ok := v.(*col[string]); ok {
+			// Strings against strings: no codes needed, a lookup in the
+			// few values (with no missing one, as fromValues has nil only
+			// when a value is nil) does.
+			isInStrings(c, set.data, set.valid, out.data)
+			return s.with(out), nil
+		}
+	}
 	a, b, n, err := jointCodes([]column{s.c}, []column{v})
 	if err != nil {
 		return nil, err
@@ -254,4 +301,22 @@ func (s *Series) IsIn(values ...any) (*Series, error) {
 		out.data[i] = c >= 0 && in[c]
 	}
 	return s.with(out), nil
+}
+
+// isInStrings sets out[i] when the string c.data[i] is present and equals
+// one of the present values of set.
+func isInStrings(c *col[string], set []string, setValid bitmap, out []bool) {
+	m := make(map[string]struct{}, len(set))
+	for i, v := range set {
+		if setValid.get(i) {
+			m[v] = struct{}{}
+		}
+	}
+	parallel(len(out), func(lo, hi int) {
+		for i := lo; i < hi; i++ {
+			if c.valid.get(i) {
+				_, out[i] = m[c.data[i]]
+			}
+		}
+	})
 }
