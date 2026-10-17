@@ -295,7 +295,7 @@ func assemble(left, right *DataFrame, lon, ron []string, li, ri []int, opts Merg
 				ind[r] = "both"
 			}
 		}
-		cat, _ := toCategory(newCol(String, ind, nil))
+		cat, _ := toCategory(newStrCol(ind, nil))
 		out.names = append(out.names, "_merge")
 		out.cols = append(out.cols, cat)
 	}

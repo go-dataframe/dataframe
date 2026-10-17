@@ -2,8 +2,6 @@ package dataframe
 
 import (
 	"fmt"
-	"strings"
-	"unsafe"
 )
 
 type cmpOp uint8
@@ -98,12 +96,12 @@ func fastCompare(op cmpOp, a, b column, out []bool) bool {
 	}
 	var x float64
 	switch p := b.(type) {
-	case *col[string]:
-		s, ok := a.(*col[string])
+	case stringCol:
+		s, ok := a.(stringCol)
 		if !ok {
 			return false
 		}
-		parallel(len(out), func(lo, hi int) { cmpStrings(op, s.data[lo:hi], s.valid, lo, p.data[0], out[lo:hi]) })
+		s.cmpScalar(op, p.at(0), out)
 		return true
 	case *col[float64]:
 		x = p.data[0]
@@ -130,33 +128,6 @@ func fastCompare(op cmpOp, a, b column, out []bool) bool {
 		return true
 	}
 	return false
-}
-
-// cmpStrings compares d, rows lo.. of a string column with validity valid,
-// to x. A missing value compares false, except with !=, as compareCols
-// has it.
-func cmpStrings(op cmpOp, d []string, valid bitmap, lo int, x string, out []bool) {
-	switch op {
-	case cmpEq:
-		for i, v := range d {
-			out[i] = v == x
-		}
-	case cmpNe:
-		for i, v := range d {
-			out[i] = v != x
-		}
-	default:
-		for i, v := range d {
-			out[i] = op.holds(strings.Compare(v, x))
-		}
-	}
-	if valid != nil {
-		for i := range d {
-			if !valid.get(lo + i) {
-				out[i] = op == cmpNe
-			}
-		}
-	}
 }
 
 func cmpLoop[T float64 | int64](op cmpOp, d []T, x T, out []bool) {
@@ -279,12 +250,17 @@ func (s *Series) IsIn(values ...any) (*Series, error) {
 	if err != nil {
 		return nil, err
 	}
-	if c, ok := s.c.(*col[string]); ok {
-		if set, ok := v.(*col[string]); ok {
+	if c, ok := s.c.(stringCol); ok {
+		if set, ok := v.(stringCol); ok {
 			// Strings against strings: no codes needed, a lookup in the
-			// few values (with no missing one, as fromValues has nil only
-			// when a value is nil) does.
-			isInStrings(c, set.data, set.valid, out.data)
+			// set of the present values does.
+			m := make(map[string]struct{}, set.len())
+			for i := range set.len() {
+				if !set.isNA(i) {
+					m[set.at(i)] = struct{}{}
+				}
+			}
+			c.isInSet(m, out.data)
 			return s.with(out), nil
 		}
 	}
@@ -302,30 +278,4 @@ func (s *Series) IsIn(values ...any) (*Series, error) {
 		out.data[i] = c >= 0 && in[c]
 	}
 	return s.with(out), nil
-}
-
-// isInStrings sets out[i] when the string c.data[i] is present and equals
-// one of the present values of set.
-func isInStrings(c *col[string], set []string, setValid bitmap, out []bool) {
-	m := make(map[string]struct{}, len(set))
-	for i, v := range set {
-		if setValid.get(i) {
-			m[v] = struct{}{}
-		}
-	}
-	parallel(len(out), func(lo, hi int) {
-		var cache strCache[bool] // see codeStrings
-		for i := lo; i < hi; i++ {
-			if !c.valid.get(i) {
-				continue
-			}
-			v := c.data[i]
-			e := cache.slot(v)
-			if e.p == nil || e.p != unsafe.StringData(v) || e.n != len(v) {
-				_, in := m[v]
-				e.p, e.n, e.v = unsafe.StringData(v), len(v), in
-			}
-			out[i] = e.v
-		}
-	})
 }

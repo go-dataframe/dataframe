@@ -153,7 +153,7 @@ func (df *DataFrame) DTypesSeries() *Series {
 		names[i] = c.dtype().String()
 	}
 	ix, _ := NewIndex("", df.Columns())
-	return &Series{index: ix, c: newCol(String, names, nil)}
+	return &Series{index: ix, c: newStrCol(names, nil)}
 }
 
 // pos returns the position of a column.

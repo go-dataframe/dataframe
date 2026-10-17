@@ -255,12 +255,12 @@ func (d DatetimeFields) Strftime(layout string) *Series {
 		layout = strftimeLayout(layout)
 	}
 	p := d.s.c.(*col[int64])
-	out := makeCol[string](String, len(p.data))
-	out.valid = p.valid
-	for i, ns := range p.data {
-		out.data[i] = timeOf(ns).Format(layout)
+	out := newStrBuilder(len(p.data), 0)
+	for _, ns := range p.data {
+		out.buf = timeOf(ns).AppendFormat(out.buf, layout)
+		out.offs = append(out.offs, int64(len(out.buf)))
 	}
-	return d.s.with(out)
+	return d.s.with(out.column(p.valid))
 }
 
 // resampleRule is a parsed resampling frequency.

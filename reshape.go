@@ -78,7 +78,7 @@ func (df *DataFrame) Stack() (*Series, error) {
 	for k := range df.index.NLevels() {
 		levels = append(levels, df.index.level(k).take(rows))
 	}
-	levels = append(levels, newCol(String, df.names, nil).take(colIdx))
+	levels = append(levels, newStrCol(df.names, nil).take(colIdx))
 	names := append(slices.Clone(df.index.names), "")
 	return &Series{index: labelIndex(names, levels), c: all.take(vals)}, nil
 }
@@ -255,7 +255,7 @@ func (df *DataFrame) Melt(idVars, valueVars []string) (*DataFrame, error) {
 		out.cols = append(out.cols, c.take(rep))
 	}
 	out.names = append(out.names, "variable", "value")
-	out.cols = append(out.cols, newCol(String, valueVars, nil).take(varIdx))
+	out.cols = append(out.cols, newStrCol(valueVars, nil).take(varIdx))
 	if len(vals) == 0 {
 		out.cols = append(out.cols, makeCol[float64](Float64, 0))
 	} else {

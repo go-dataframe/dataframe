@@ -273,7 +273,7 @@ func TestIndexAPI(t *testing.T) {
 	}
 	_, err = s.Values()
 	fails(t, err, ErrDType)
-	m := labelIndex([]string{"k", "j"}, []column{newCol(String, []string{"a", "a", "b"}, nil), newCol(Int64, []int64{1, 2, 1}, nil)})
+	m := labelIndex([]string{"k", "j"}, []column{newStrCol([]string{"a", "a", "b"}, nil), newCol(Int64, []int64{1, 2, 1}, nil)})
 	if p := Must(m.Get([]any{"a", 2})); !reflect.DeepEqual(p, []int{1}) {
 		t.Error("multi Get", p)
 	}

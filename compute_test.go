@@ -308,7 +308,7 @@ func TestReductions(t *testing.T) {
 		t.Error("frame reductions")
 	}
 	txt := Must(New(Col("s", []any{"x", "x", nil}), Col("e", []any{nil, nil, nil})))
-	txt.cols[1] = newCol(String, []string{"", "", ""}, newBitmap(3))
+	txt.cols[1] = newStrCol([]string{"", "", ""}, newBitmap(3))
 	d := txt.Describe()
 	if d.cols[0].value(2) != "x" || d.cols[0].value(3) != "2" || d.cols[1].value(2) != nil {
 		t.Error("describe text", d)

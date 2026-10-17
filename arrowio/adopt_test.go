@@ -228,3 +228,32 @@ func TestDictionaryNullEntry(t *testing.T) {
 		t.Errorf("codes %v", codes)
 	}
 }
+
+// Strings in several chunks are laid out end to end, with int64 offsets
+// when they are too many bytes for int32 ones (the bound lowered here).
+func TestStringChunksBothWidths(t *testing.T) {
+	df := allTypes(t)
+	for _, bound := range []int{maxStr32, 3} {
+		old := maxStr32
+		maxStr32 = bound
+		var b bytes.Buffer
+		if err := WriteIPCStream(&b, df); err != nil {
+			t.Fatal(err)
+		}
+		rec := dataframe.Must(ReadIPCStream(bytes.NewReader(b.Bytes())))
+		two := dataframe.Must(FromRecords(mustRecord(t, df).Schema(), []arrow.RecordBatch{mustRecord(t, df), mustRecord(t, df)}))
+		maxStr32 = old
+		equalFrames(t, fmt.Sprint("stream ", bound), rec, df)
+		want := dataframe.Must(df.Column("s")).Items()
+		equalItems(t, fmt.Sprint("two batches ", bound), dataframe.Must(two.Column("s")).Items(), append(want, want...))
+	}
+}
+
+func mustRecord(t *testing.T, df *dataframe.DataFrame) arrow.RecordBatch {
+	t.Helper()
+	rec, err := ToRecord(df)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return rec
+}

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 	"math/bits"
+	mbits "math/bits"
 	"strings"
 	"unsafe"
 
@@ -132,7 +133,7 @@ func toArray(s *dataframe.Series, cfg *config) (arrow.Array, bool, error) {
 		t := &arrow.TimestampType{Unit: arrow.Nanosecond, TimeZone: cfg.timeZone}
 		a = fixed(t, data[int64](s), valid, n)
 	case dataframe.String, dataframe.Period:
-		a = stringArray(text(s), valid)
+		a = textArray(s, valid)
 	case dataframe.Category:
 		a = dictArray(s)
 	default:
@@ -285,11 +286,38 @@ func offsetStrings[O int32 | int64](dt arrow.DataType, strs []string, total int,
 
 // text returns a string series' storage, shared, or a period series'
 // values formatted.
-func text(s *dataframe.Series) []string {
-	if d, _, ok := rawcol.Strings(s); ok {
-		return d
+// textArray converts a string or period series to an Arrow array, as
+// stringArray lays its values out. A string series whose storage already
+// is that layout (int32 offsets from 0, an empty value in every missing
+// slot, utf8-sized) is shared rather than copied.
+func textArray(s *dataframe.Series, valid []uint64) arrow.Array {
+	if data, offs, _, ok := rawcol.Strings(s); ok {
+		if o, ok := offs.([]int32); ok && o[0] == 0 && int(o[len(o)-1]) <= largeStrings && emptyWhereMissing(o, valid) {
+			n := len(o) - 1
+			buf := unsafe.Slice(unsafe.StringData(data), int(o[n]))
+			vb, nulls := validityBuffer(valid, n)
+			ad := array.NewData(arrow.BinaryTypes.String, n, []*memory.Buffer{vb, memory.NewBufferBytes(bytesOf(o)), memory.NewBufferBytes(buf)}, nil, nulls, 0)
+			defer ad.Release()
+			return array.MakeFromData(ad)
+		}
 	}
-	return s.Strings()
+	return stringArray(s.Strings(), valid)
+}
+
+// emptyWhereMissing reports whether every value valid marks missing is
+// empty.
+func emptyWhereMissing(offs []int32, valid []uint64) bool {
+	n := len(offs) - 1
+	for w, bits := range valid {
+		for bits != math.MaxUint64 {
+			b := mbits.TrailingZeros64(^bits)
+			bits |= 1 << uint(b)
+			if i := w<<6 + b; i < n && offs[i] != offs[i+1] {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // bitsSet counts the set bits of a bitmap.

@@ -8,6 +8,7 @@ import (
 	mbits "math/bits"
 	"runtime"
 	"slices"
+	"strings"
 	"sync"
 	"unsafe"
 
@@ -96,7 +97,7 @@ func fromChunks(schema *arrow.Schema, chunks [][]arrow.Array, n int, own bool, a
 	convert := func(i int) {
 		f := fields[i]
 		if f.Type.ID() == arrow.DICTIONARY && slices.Contains(asString, i) {
-			series[i] = dictStrings(f.Name, chunks[i], n, own)
+			series[i] = dictStrings(f.Name, chunks[i], n)
 		} else {
 			series[i], errs[i] = toSeries(f, chunks[i], n, own)
 		}
@@ -167,7 +168,7 @@ func toSeries(f arrow.Field, chunks []arrow.Array, n int, own bool) (*dataframe.
 	case *arrow.TimestampType:
 		return timestamps(name, t.Unit, n, valid, chunks, own)
 	case *arrow.StringType, *arrow.LargeStringType:
-		return raw(name, readStrings(chunks, n, own), valid, false), nil
+		return stringSeries(name, chunks, n, valid, own), nil
 	case *arrow.DictionaryType:
 		return categories(name, t, n, chunks, own)
 	case *arrow.NullType:
@@ -350,58 +351,114 @@ func timestamps(name string, unit arrow.TimeUnit, n int, valid []uint64, chunks 
 	return dataframe.ToDatetime(s)
 }
 
-// readStrings reads utf8 or large_utf8 chunks without allocating per value.
-// With own, the values point into the chunks' byte buffers, which the
-// caller hands over (see fromChunks); otherwise each chunk's bytes are
-// copied once into one Go string that the values slice, so that the result
-// does not point into Arrow buffers.
-func readStrings(chunks []arrow.Array, n int, own bool) []string {
-	out := make([]string, n)
-	off := 0
+// stringSeries reads utf8 or large_utf8 chunks as a string series. With
+// own, a column in one chunk keeps the chunk's bytes and offsets as they
+// are (see fromChunks); otherwise the bytes are copied once, end to end,
+// into a buffer of the series' own.
+func stringSeries(name string, chunks []arrow.Array, n int, valid []uint64, own bool) *dataframe.Series {
+	if own && len(chunks) == 1 && chunks[0].Len() > 0 {
+		switch c := chunks[0].(type) {
+		case *array.String:
+			if offs := c.ValueOffsets(); aligned(offs) {
+				return rawStrings(name, valueBuffer(c), offs, valid)
+			}
+		case *array.LargeString:
+			if offs := c.ValueOffsets(); aligned(offs) {
+				return rawStrings(name, valueBuffer(c), offs, valid)
+			}
+		}
+	}
+	total := 0
+	for _, c := range chunks {
+		if c.Len() > 0 {
+			total += len(c.(interface{ ValueBytes() []byte }).ValueBytes())
+		}
+	}
+	buf := make([]byte, 0, total)
+	if total <= maxStr32 {
+		offs := make([]int32, 1, n+1)
+		buf, offs = appendChunks(buf, offs, chunks)
+		return rawStrings(name, unsafe.String(unsafe.SliceData(buf), len(buf)), offs, valid)
+	}
+	offs := make([]int64, 1, n+1)
+	buf, offs = appendChunks(buf, offs, chunks)
+	return rawStrings(name, unsafe.String(unsafe.SliceData(buf), len(buf)), offs, valid)
+}
+
+// maxStr32 is the most bytes a string series is read into with int32
+// offsets; a variable so that tests can take the int64 path.
+var maxStr32 = math.MaxInt32
+
+// valueBuffer returns the whole values buffer of a string chunk, which its
+// offsets index, as a string over the same bytes.
+func valueBuffer(c arrow.Array) string {
+	b := c.Data().Buffers()[2].Bytes()
+	return unsafe.String(unsafe.SliceData(b), len(b))
+}
+
+// appendChunks appends the chunks' values to buf and their end offsets to
+// offs.
+func appendChunks[P int32 | int64](buf []byte, offs []P, chunks []arrow.Array) ([]byte, []P) {
 	for _, c := range chunks {
 		if c.Len() == 0 {
 			continue
 		}
 		switch c := c.(type) {
 		case *array.String:
-			sliceStrings(out[off:], c.ValueOffsets(), c.ValueBytes(), own)
+			buf, offs = appendOffsets(buf, offs, c.ValueOffsets(), c.ValueBytes())
 		case *array.LargeString:
-			sliceStrings(out[off:], c.ValueOffsets(), c.ValueBytes(), own)
+			buf, offs = appendOffsets(buf, offs, c.ValueOffsets(), c.ValueBytes())
 		}
-		off += c.Len()
+	}
+	return buf, offs
+}
+
+func appendOffsets[O, P int32 | int64](buf []byte, offs []P, src []O, b []byte) ([]byte, []P) {
+	base := P(len(buf)) - P(src[0])
+	for _, o := range src[1:] {
+		offs = append(offs, base+P(o))
+	}
+	return append(buf, b...), offs
+}
+
+// rawStrings builds a series over storage the caller hands over.
+func rawStrings(name, data string, offs any, valid []uint64) *dataframe.Series {
+	return rawcol.StringSeries(name, data, offs, valid).(*dataframe.Series)
+}
+
+// stringValues returns the values of a utf8 or large_utf8 array, copied
+// so that they do not point into Arrow buffers.
+func stringValues(a arrow.Array) []string {
+	v := a.(interface{ Value(int) string })
+	out := make([]string, a.Len())
+	for i := range out {
+		out[i] = strings.Clone(v.Value(i))
 	}
 	return out
 }
 
-func sliceStrings[O int32 | int64](out []string, offs []O, b []byte, own bool) {
-	buf := unsafe.String(unsafe.SliceData(b), len(b))
-	if !own {
-		buf = string(b)
-	}
-	base := offs[0]
-	for i := range len(offs) - 1 {
-		out[i] = buf[offs[i]-base : offs[i+1]-base]
-	}
-}
-
 // dictStrings reads chunks of dictionary<int32, utf8 or large_utf8> as a
-// string column, each value sharing its dictionary entry's bytes.
-func dictStrings(name string, chunks []arrow.Array, n int, own bool) *dataframe.Series {
+// string column: the dictionaries laid end to end, then each value
+// gathered from its chunk's dictionary.
+func dictStrings(name string, chunks []arrow.Array, n int) *dataframe.Series {
 	valid := nullBits(chunks, n)
-	out := make([]string, n)
-	off := 0
+	idx := make([]int, n)
+	var dicts []arrow.Array
+	off, base := 0, 0
 	for _, c := range chunks {
 		d := c.(*array.Dictionary)
-		values := readStrings([]arrow.Array{d.Dictionary()}, d.Dictionary().Len(), own)
-		idx := d.Indices().(*array.Int32).Int32Values()
-		for i, k := range idx {
+		for i, k := range d.Indices().(*array.Int32).Int32Values() {
+			idx[off+i] = -1
 			if isValid(valid, off+i) {
-				out[off+i] = values[k]
+				idx[off+i] = base + int(k)
 			}
 		}
+		dicts = append(dicts, d.Dictionary())
+		base += d.Dictionary().Len()
 		off += d.Len()
 	}
-	return raw(name, out, valid, false)
+	all := stringSeries(name, dicts, base, nil, false)
+	return rawcol.Take(all, idx).(*dataframe.Series)
 }
 
 // categories reads a dictionary column with string values as a category
@@ -421,7 +478,7 @@ func categories(name string, t *arrow.DictionaryType, n int, chunks []arrow.Arra
 	identity, dictNulls := true, false
 	for c, ch := range chunks {
 		dict := ch.(*array.Dictionary).Dictionary()
-		values := readStrings([]arrow.Array{dict}, dict.Len(), false)
+		values := stringValues(dict)
 		remap := make([]int32, len(values))
 		for k, v := range values {
 			if dict.IsNull(k) {

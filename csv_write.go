@@ -188,8 +188,8 @@ func csvCells(c column, naRep string) cellFunc {
 		}
 	case *col[uint64]:
 		f = func(dst []byte, i int) []byte { return strconv.AppendUint(dst, p.data[i], 10) }
-	case *col[string]:
-		f = func(dst []byte, i int) []byte { return append(dst, p.data[i]...) }
+	case stringCol:
+		f = func(dst []byte, i int) []byte { return append(dst, p.at(i)...) }
 	}
 	if f == nil {
 		f = func(dst []byte, i int) []byte { return append(dst, c.str(i)...) }

@@ -351,15 +351,15 @@ func ToDatetime(s *Series, layout ...string) (*Series, error) {
 		l = layout[0]
 	}
 	switch c := s.c.(type) {
-	case *col[string]:
-		out := makeCol[int64](Datetime, len(c.data))
-		out.valid = c.valid.clone()
+	case stringCol:
+		out := makeCol[int64](Datetime, c.len())
+		out.valid = c.validity().clone()
 		p := newTimeParser(l)
-		for i, v := range c.data {
+		for i := range c.len() {
 			if c.isNA(i) {
 				continue
 			}
-			ns, err := p.parse(strings.TrimSpace(v))
+			ns, err := p.parse(strings.TrimSpace(c.at(i)))
 			if err != nil {
 				return nil, err
 			}

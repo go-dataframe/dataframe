@@ -30,15 +30,15 @@ func benchFrame(n int) *DataFrame {
 	for i := range cats {
 		cats[i] = "c" + strconv.Itoa(i)
 	}
-	cat := makeCol[string](String, n)
+	cat := make([]string, n)
 	for i := range n {
 		key.data[i] = int64(i*7919) % 1000
 		x.data[i] = float64(uint64(i)*2654435761%1000003) / 1000003
 		y.data[i] = float64(uint64(i)*40503%999983) / 999983
-		cat.data[i] = cats[(i*31)%100]
+		cat[i] = cats[(i*31)%100]
 	}
 	return &DataFrame{index: NewRangeIndex(n), names: []string{"key", "x", "y", "cat"},
-		cols: []column{key, x, y, cat}}
+		cols: []column{key, x, y, newStrCol(cat, nil)}}
 }
 
 func benchRight() *DataFrame {

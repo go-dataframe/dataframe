@@ -26,14 +26,15 @@ func cast(c column, dt DType) (column, error) {
 	case src == dt && dt != Category:
 		return c, nil
 	case dt == String:
-		out := makeCol[string](String, c.len())
-		for i := range out.data {
-			if !c.isNA(i) {
-				out.data[i] = c.str(i)
+		b := newStrBuilder(c.len(), 0)
+		for i := range c.len() {
+			if c.isNA(i) {
+				b.add("")
+			} else {
+				b.add(c.str(i))
 			}
 		}
-		out.valid = naBitmap(c)
-		return out, nil
+		return b.column(naBitmap(c)), nil
 	case dt == Category:
 		return toCategory(c)
 	case src.IsNumeric() && dt.IsNumeric():
@@ -52,7 +53,7 @@ func cast(c column, dt DType) (column, error) {
 		p := c.(*col[int64])
 		return &col[int64]{dt: Datetime, data: p.data, arr: p.arr, valid: p.valid, o: opsDatetime}, nil
 	case src == String && (dt.IsNumeric() || dt == Datetime):
-		return parseStrings(c.(*col[string]), dt)
+		return parseStrings(c.(stringCol), dt)
 	case src == Category:
 		s, _ := cast(c, String)
 		return cast(s, dt)
@@ -82,13 +83,13 @@ func naBitmap(c column) bitmap {
 }
 
 // parseStrings parses a string column into a numeric or datetime column.
-func parseStrings(c *col[string], dt DType) (column, error) {
-	parsed := make([]any, len(c.data))
-	for i, s := range c.data {
+func parseStrings(c stringCol, dt DType) (column, error) {
+	parsed := make([]any, c.len())
+	for i := range parsed {
 		if c.isNA(i) {
 			continue
 		}
-		v, err := parseScalar(strings.TrimSpace(s), dt)
+		v, err := parseScalar(strings.TrimSpace(c.at(i)), dt)
 		if err != nil {
 			return nil, err
 		}
@@ -96,7 +97,7 @@ func parseStrings(c *col[string], dt DType) (column, error) {
 	}
 	if dt == Uint64 {
 		out := makeCol[uint64](Uint64, len(parsed))
-		out.valid = c.valid
+		out.valid = c.validity()
 		for i, v := range parsed {
 			if v != nil {
 				out.data[i] = v.(uint64)

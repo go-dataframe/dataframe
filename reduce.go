@@ -468,15 +468,15 @@ func (df *DataFrame) describeText() *DataFrame {
 			vals[2] = vc.index.levels[0].str(0)
 			vals[3] = vc.c.value(0)
 		}
-		col := makeCol[string](String, 4)
-		col.valid = allValid(4)
+		strs, valid := make([]string, 4), allValid(4)
 		for i, v := range vals {
 			if v == nil {
-				col.valid.clear(i)
+				valid.clear(i)
 			} else {
-				col.data[i] = fmt.Sprint(v)
+				strs[i] = fmt.Sprint(v)
 			}
 		}
+		col := newStrCol(strs, valid)
 		out.names = append(out.names, df.names[k])
 		out.cols = append(out.cols, col)
 	}

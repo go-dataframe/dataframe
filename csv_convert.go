@@ -130,7 +130,7 @@ type colState struct {
 	valid   []bitmap // per chunk, rows relative to it; nil when none missing
 	errs    []error  // per chunk
 	kind    DType
-	strs    *col[string]
+	strs    []string // headers into the input until finish lays them out
 	bools   *col[bool]
 	uints   *col[uint64]
 }
@@ -397,7 +397,7 @@ func (st *colState) stringChunk(g int) {
 			st.missing(g, r)
 			continue
 		}
-		st.strs.data[off+r] = s
+		st.strs[off+r] = s
 	}
 }
 
@@ -495,7 +495,7 @@ func directDType(dt DType) bool {
 func (st *colState) alloc() {
 	switch {
 	case st.strs == nil && st.kind == String:
-		st.strs = makeCol[string](String, st.cv.n)
+		st.strs = make([]string, st.cv.n)
 	case st.bools == nil && st.kind == Bool:
 		st.bools = makeCol[bool](Bool, st.cv.n)
 	}
@@ -540,8 +540,8 @@ func (st *colState) finish() (column, error) {
 	var c column
 	switch st.kind {
 	case String:
-		st.strs.valid = valid
-		c = st.strs
+		c = newStrCol(st.strs, valid)
+		st.strs = nil
 		if st.sp.mode == convDType && st.sp.dt != String {
 			return st.cast(c)
 		}
