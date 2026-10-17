@@ -284,6 +284,14 @@ func (df *DataFrame) take(idx []int) *DataFrame {
 	return &DataFrame{index: df.index.take(idx), names: df.names, cols: cols}
 }
 
+// takeOwned is take for positions, none negative, that the caller hands
+// over: a default range index then keeps them as its labels.
+func (df *DataFrame) takeOwned(idx []int) *DataFrame {
+	cols := make([]column, len(df.cols))
+	eachColumn(len(idx), len(df.cols), func(k int) { cols[k] = df.cols[k].take(idx) })
+	return &DataFrame{index: df.index.takeOwned(idx), names: df.names, cols: cols}
+}
+
 // Copy returns a deep copy of the frame.
 func (df *DataFrame) Copy() *DataFrame {
 	idx := make([]int, df.Len())

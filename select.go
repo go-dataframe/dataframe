@@ -2,8 +2,10 @@ package dataframe
 
 import (
 	"fmt"
+	"runtime"
 	"slices"
 	"sync"
+	"unsafe"
 )
 
 // Selector picks rows (or, for Iloc, columns): all of them, a range or list
@@ -223,7 +225,7 @@ func (df *DataFrame) rows(sel Selector) (*DataFrame, error) {
 	case idx == nil:
 		return df.slice(i, j), nil
 	}
-	return df.take(idx), nil
+	return df.takeOwned(idx), nil
 }
 
 // Iloc selects rows by position, and optionally columns by position:
@@ -427,6 +429,21 @@ func (s *Series) Reindex(labels any) (*Series, error) {
 // maskPositions returns the positions where m is true, counting and filling
 // in parallel chunks for a long mask.
 func maskPositions(m []bool) []int {
+	if len(m) < parallelMin || runtime.GOMAXPROCS(0) < 2 {
+		// One pass to count, one to fill, both without branches: a bool
+		// is a 0 or 1 byte.
+		total := 0
+		for _, b := range m {
+			total += int(*(*uint8)(unsafe.Pointer(&b)))
+		}
+		idx := make([]int, total+1)
+		j := 0
+		for i, b := range m {
+			idx[j] = i
+			j += int(*(*uint8)(unsafe.Pointer(&b)))
+		}
+		return idx[:total:total]
+	}
 	var mu sync.Mutex
 	counts := map[int]int{}
 	parallel(len(m), func(lo, hi int) {

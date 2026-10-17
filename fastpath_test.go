@@ -152,3 +152,81 @@ func TestStringFastPaths(t *testing.T) {
 		}
 	}
 }
+
+// maskPositions gives the true positions in order, on either path.
+func TestMaskPositions(t *testing.T) {
+	r := rand.New(rand.NewPCG(5, 6))
+	for _, n := range []int{0, 1, 1000, 3*parallelMin + 17} {
+		m := make([]bool, n)
+		var want []int
+		for i := range m {
+			m[i] = r.IntN(3) == 0
+			if m[i] {
+				want = append(want, i)
+			}
+		}
+		if got := maskPositions(m); !slices.Equal(got, want) && len(want)+len(got) > 0 {
+			t.Errorf("n=%d: %d positions, want %d", n, len(got), len(want))
+		}
+	}
+}
+
+// sortedDense codes an int64 key as the general sortedCodes does: codes in
+// key order, -1 for a missing key, the first row of each group; a key too
+// sparse for a table takes the general path.
+func TestSortedDense(t *testing.T) {
+	r := rand.New(rand.NewPCG(7, 8))
+	for _, spread := range []int64{50, 1e12} {
+		n := 5000
+		v := make([]int64, n)
+		ok := make([]bool, n)
+		for i := range v {
+			v[i] = r.Int64N(100)*spread - 30*spread
+			ok[i] = i%7 != 0
+		}
+		key := Must(NewSeriesMasked("k", v, ok)).c
+		codes, ng, reps := sortedCodes([]column{key})
+		// The reference: the distinct present keys sorted, and first rows.
+		var uniq []int64
+		for i, x := range v {
+			if ok[i] && !slices.Contains(uniq, x) {
+				uniq = append(uniq, x)
+			}
+		}
+		slices.Sort(uniq)
+		if ng != len(uniq) {
+			t.Fatalf("spread %d: %d groups, want %d", spread, ng, len(uniq))
+		}
+		for i, x := range v {
+			want := -1
+			if ok[i] {
+				want = slices.Index(uniq, x)
+			}
+			if codes[i] != want {
+				t.Fatalf("spread %d: code %d at %d, want %d", spread, codes[i], i, want)
+			}
+		}
+		for c, row := range reps {
+			first := slices.IndexFunc(codes, func(k int) bool { return k == c })
+			if row != first {
+				t.Fatalf("spread %d: group %d first row %d, want %d", spread, c, row, first)
+			}
+		}
+		// Sums over a masked int64 column match a plain loop.
+		df := Must(New(Col("k", Must(NewSeriesMasked("k", v, ok))), Col("x", Must(NewSeriesMasked("x", v, ok)))))
+		g := Must(df.GroupBy("k"))
+		sum := Must(g.Sum())
+		xs := Must(sum.Column("x")).Items()
+		for c, u := range uniq {
+			var s int64
+			for i, x := range v {
+				if ok[i] && x == u {
+					s += x
+				}
+			}
+			if xs[c] != s {
+				t.Fatalf("spread %d: sum %v for %d, want %d", spread, xs[c], u, s)
+			}
+		}
+	}
+}

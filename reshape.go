@@ -128,6 +128,11 @@ func (s *Series) Unstack() (*DataFrame, error) {
 // sortedCodes codes rows by key tuple with codes in sorted key order; it
 // returns the codes, their count, and a representative row of each.
 func sortedCodes(keys []column) ([]int, int, []int) {
+	if len(keys) == 1 {
+		if codes, n, sorted, ok := sortedDense(keys[0]); ok {
+			return codes, n, sorted
+		}
+	}
 	codes, n := groupCodes(keys)
 	reps := make([]int, n)
 	for i := range reps {
@@ -257,4 +262,53 @@ func (df *DataFrame) Melt(idVars, valueVars []string) (*DataFrame, error) {
 		out.cols = append(out.cols, stackAll(vals))
 	}
 	return out, nil
+}
+
+// sortedDense is sortedCodes for one int64 key whose range of values is no
+// wider than factorizeDense takes: a table over the range marks the values
+// present, and walking it in order ranks them, with no hashing and no sort.
+func sortedDense(key column) ([]int, int, []int, bool) {
+	p, ok := key.(*col[int64])
+	if !ok || p.dt != Int64 || len(p.data) == 0 {
+		return nil, 0, nil, false
+	}
+	lo, hi := p.data[0], p.data[0]
+	for _, v := range p.data {
+		lo, hi = min(lo, v), max(hi, v)
+	}
+	if hi-lo < 0 || uint64(hi-lo) > uint64(4*len(p.data)+1024) {
+		return nil, 0, nil, false
+	}
+	table := make([]int32, hi-lo+1)
+	for i, v := range p.data {
+		if p.valid.get(i) {
+			table[v-lo] = 1
+		}
+	}
+	n := 0
+	for j, t := range table {
+		if t == 0 {
+			table[j] = -1
+			continue
+		}
+		table[j] = int32(n)
+		n++
+	}
+	codes := make([]int, len(p.data))
+	sorted := make([]int, n)
+	for i := range sorted {
+		sorted[i] = -1
+	}
+	for i, v := range p.data {
+		if !p.valid.get(i) {
+			codes[i] = -1
+			continue
+		}
+		c := int(table[v-lo])
+		codes[i] = c
+		if sorted[c] < 0 {
+			sorted[c] = i
+		}
+	}
+	return codes, n, sorted, true
 }

@@ -3,6 +3,7 @@ package dataframe
 import (
 	"fmt"
 	"strings"
+	"unsafe"
 )
 
 type cmpOp uint8
@@ -313,10 +314,18 @@ func isInStrings(c *col[string], set []string, setValid bitmap, out []bool) {
 		}
 	}
 	parallel(len(out), func(lo, hi int) {
+		var cache strCache[bool] // see codeStrings
 		for i := lo; i < hi; i++ {
-			if c.valid.get(i) {
-				_, out[i] = m[c.data[i]]
+			if !c.valid.get(i) {
+				continue
 			}
+			v := c.data[i]
+			e := cache.slot(v)
+			if e.p == nil || e.p != unsafe.StringData(v) || e.n != len(v) {
+				_, in := m[v]
+				e.p, e.n, e.v = unsafe.StringData(v), len(v), in
+			}
+			out[i] = e.v
 		}
 	})
 }

@@ -225,6 +225,14 @@ func (g *GroupBy) sum(c column) (column, error) {
 	switch p := c.(type) {
 	case *col[float64]:
 		s := makeCol[float64](Float64, n)
+		if p.valid == nil {
+			for i, k := range g.codes {
+				if v := p.data[i]; k >= 0 && v == v {
+					s.data[k] += v
+				}
+			}
+			return s, nil
+		}
 		for i, k := range g.codes {
 			if v := p.data[i]; k >= 0 && v == v && p.valid.get(i) {
 				s.data[k] += v
@@ -234,6 +242,14 @@ func (g *GroupBy) sum(c column) (column, error) {
 	case *col[int64]:
 		if p.dt == Int64 {
 			s := makeCol[int64](Int64, n)
+			if p.valid == nil {
+				for i, k := range g.codes {
+					if k >= 0 {
+						s.data[k] += p.data[i]
+					}
+				}
+				return s, nil
+			}
 			for i, k := range g.codes {
 				if k >= 0 && p.valid.get(i) {
 					s.data[k] += p.data[i]
