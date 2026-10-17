@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"math"
 	mbits "math/bits"
+	"runtime"
 	"slices"
+	"sync"
 	"unsafe"
 
 	"github.com/apache/arrow-go/v18/arrow"
@@ -88,19 +90,35 @@ func fromChunks(schema *arrow.Schema, chunks [][]arrow.Array, n int, own bool, a
 	if err != nil {
 		return nil, err
 	}
-	cols := make([]dataframe.Column, len(chunks))
-	for i, f := range schema.Fields() {
-		var s *dataframe.Series
-		var err error
+	fields := schema.Fields()
+	series := make([]*dataframe.Series, len(fields))
+	errs := make([]error, len(fields))
+	convert := func(i int) {
+		f := fields[i]
 		if f.Type.ID() == arrow.DICTIONARY && slices.Contains(asString, i) {
-			s = dictStrings(f.Name, chunks[i], n, own)
+			series[i] = dictStrings(f.Name, chunks[i], n, own)
 		} else {
-			s, err = toSeries(f, chunks[i], n, own)
+			series[i], errs[i] = toSeries(f, chunks[i], n, own)
 		}
-		if err != nil {
-			return nil, fmt.Errorf("column %q: %w", f.Name, err)
+	}
+	// Columns convert independently: a large frame converts them at once.
+	if n >= 1<<15 && runtime.GOMAXPROCS(0) > 1 {
+		var wg sync.WaitGroup
+		for i := range fields {
+			wg.Go(func() { convert(i) })
 		}
-		cols[i] = dataframe.Col(f.Name, s)
+		wg.Wait()
+	} else {
+		for i := range fields {
+			convert(i)
+		}
+	}
+	cols := make([]dataframe.Column, len(fields))
+	for i, f := range fields {
+		if errs[i] != nil {
+			return nil, fmt.Errorf("column %q: %w", f.Name, errs[i])
+		}
+		cols[i] = dataframe.Col(f.Name, series[i])
 	}
 	df, _ := dataframe.New(cols...)
 	if spec == nil {
