@@ -5,6 +5,8 @@ go 1.27.2
 require (
 	github.com/apache/arrow-go/v18 v18.8.0
 	github.com/go-dataframe/dataframe v0.0.0
+	github.com/golang/snappy v1.0.0
+	github.com/klauspost/compress v1.19.2
 )
 
 require (
@@ -15,7 +17,6 @@ require (
 	github.com/goccy/go-json v0.10.6 // indirect
 	github.com/google/flatbuffers v25.12.19+incompatible // indirect
 	github.com/google/uuid v1.6.0 // indirect
-	github.com/klauspost/compress v1.19.2 // indirect
 	github.com/klauspost/cpuid/v2 v2.4.0 // indirect
 	github.com/pierrec/lz4/v4 v4.1.29 // indirect
 	github.com/zeebo/xxh3 v1.1.0 // indirect

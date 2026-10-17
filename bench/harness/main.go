@@ -67,6 +67,8 @@ func main() {
 	switch os.Args[1] {
 	case "measure":
 		measure(os.Args[2:])
+	case "snappy":
+		snappyCompare(5)
 	case "golden":
 		if len(os.Args) != 4 {
 			fail("usage: harness golden dirA dirB")

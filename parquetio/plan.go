@@ -184,6 +184,7 @@ func stringDict(col *array.String, lo, hi int) (arrow.Array, bool) {
 	n := hi - lo
 	codes := make([]int32, n)
 	pos := make(map[string]int32, 256)
+	var shorts shortCodes // values of up to 7 bytes, coded without hashing a string
 	dictOffs := []int32{0}
 	var dictData []byte
 	size := 0
@@ -198,6 +199,13 @@ func stringDict(col *array.String, lo, hi int) (arrow.Array, bool) {
 			// chunk holding one would get a wrong minimum.
 			return nil, false
 		}
+		key, short := shortKey(v)
+		if short {
+			if k, ok := shorts.get(key); ok {
+				codes[i-lo] = k
+				continue
+			}
+		}
 		k, ok := pos[v]
 		if !ok {
 			size += len(v) + 4
@@ -208,6 +216,9 @@ func stringDict(col *array.String, lo, hi int) (arrow.Array, bool) {
 			pos[v] = k
 			dictData = append(dictData, v...)
 			dictOffs = append(dictOffs, int32(len(dictData)))
+		}
+		if short {
+			shorts.put(key, k)
 		}
 		codes[i-lo] = k
 	}
@@ -234,4 +245,62 @@ func stringDict(col *array.String, lo, hi int) (arrow.Array, bool) {
 // int32Bytes views int32s as bytes, without copying.
 func int32Bytes(d []int32) []byte {
 	return unsafe.Slice((*byte)(unsafe.Pointer(unsafe.SliceData(d))), 4*len(d))
+}
+
+// shortKey packs a non-empty string of at most 7 bytes, with its length,
+// into a uint64 no other string packs to (never 0); false otherwise.
+func shortKey(s string) (uint64, bool) {
+	if len(s) > 7 || len(s) == 0 {
+		return 0, false
+	}
+	k := uint64(len(s)) << 56
+	for i := range len(s) {
+		k |= uint64(s[i]) << (8 * i)
+	}
+	return k, true
+}
+
+// shortCodes is an open-addressing table from shortKey keys to codes.
+type shortCodes struct {
+	keys  []uint64
+	codes []int32
+	n     int
+	shift uint
+}
+
+func (t *shortCodes) get(k uint64) (int32, bool) {
+	if t.keys == nil {
+		return 0, false
+	}
+	mask := len(t.keys) - 1
+	for h := int((k * 0x9E3779B97F4A7C15) >> t.shift); ; h = (h + 1) & mask {
+		switch t.keys[h] {
+		case k:
+			return t.codes[h], true
+		case 0:
+			return 0, false
+		}
+	}
+}
+
+func (t *shortCodes) put(k uint64, code int32) {
+	if 2*(t.n+1) > len(t.keys) {
+		old, oldCodes := t.keys, t.codes
+		t.keys = make([]uint64, max(64, 2*len(old)))
+		t.codes = make([]int32, len(t.keys))
+		t.shift = uint(64 - bits.Len(uint(len(t.keys)-1)))
+		t.n = 0
+		for i, ok := range old {
+			if ok != 0 {
+				t.put(ok, oldCodes[i])
+			}
+		}
+	}
+	mask := len(t.keys) - 1
+	h := int((k * 0x9E3779B97F4A7C15) >> t.shift)
+	for t.keys[h] != 0 {
+		h = (h + 1) & mask
+	}
+	t.keys[h], t.codes[h] = k, code
+	t.n++
 }
