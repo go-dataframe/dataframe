@@ -8,6 +8,143 @@ given for each run); treat differences under ~1.5x as noise, and the polars
 column especially, since polars is multi-threaded too and suffers most from
 a busy machine.
 
+## Against pandas and pyarrow, before and after (2026-10-17)
+
+Every operation with a pandas counterpart, measured on main (ed92ca8) and
+on this branch, interleaved with pandas in the same rounds: main's Go,
+this branch's Go, pandas, seven rounds; each Go figure is the mean of 3
+runs (`-test.benchtime 3x`), each pandas figure the median (operations)
+or mean (I/O) of 3. The tables give the median over the rounds, in
+milliseconds, and the ratio to pandas: **below 1.00 is faster than
+pandas**. Same machine as below (Apple M4 Max, 16 cores), Go 1.27.2,
+arrow-go v18.8.0, pandas 3.0.6, pyarrow 26.0.0, numpy 2.5.4, Python
+3.12.12. The host was shared and loaded: load average 13–19 for the
+one-thread run, 16–22 for the default one, and the spread between rounds
+was wide; treat differences under ~10% as noise.
+
+I/O is on the 10^6-row mixed frame of the Arrow and Parquet section
+below; the operations on the 10^6-row table of the operations section.
+to_datetime parses 10^6 "YYYY-MM-DD HH:MM:SS" strings, inferred and with
+`%Y-%m-%d %H:%M:%S`; write_csv writes the table with its index, as
+`df.to_csv()` does; string_eq is `cat == "c7"`, string_isin
+`cat.isin(["c1", "c22", "c57"])`. go-dataframe has no `.str` accessor,
+so there is no other string operation to compare.
+
+### One thread each
+
+GOMAXPROCS=1 for Go; pyarrow's CPU and I/O pools sized 1, and
+`use_threads=False` on the reads (`THREADS=1`). pandas' own operations
+are single-threaded anyway.
+
+| operation | main | this PR | pandas | main/pandas | PR/pandas |
+|---|---:|---:|---:|---:|---:|
+| write Parquet | 160.0 | 107.3 | 90.6 | 1.77 | 1.18 |
+| read Parquet | 45.5 | 28.9 | 33.9 | 1.34 | 0.85 |
+| write IPC file | 13.7 | 9.7 | 20.6 | 0.67 | 0.47 |
+| read IPC file | 6.0 | 3.5 | 5.1 | 1.18 | 0.68 |
+| groupby_sum | 5.9 | 4.8 | 5.3 | 1.11 | 0.91 |
+| groupby_sum_string | 12.6 | 7.6 | 11.4 | 1.11 | 0.67 |
+| sort_values | 34.6 | 34.5 | 35.9 | 0.96 | 0.96 |
+| filter | 7.3 | 6.9 | 4.0 | 1.82 | 1.73 |
+| merge | 12.5 | 11.1 | 12.2 | 1.03 | 0.91 |
+| to_datetime | 18.5 | 18.3 | 104.5 | 0.18 | 0.18 |
+| to_datetime_format | 1518.4 | 24.8 | 103.4 | 14.68 | 0.24 |
+| write_csv | 181.1 | 177.4 | 1175.8 | 0.15 | 0.15 |
+| string_eq | 13.0 | 0.9 | 1.2 | 10.85 | 0.77 |
+| string_isin | 10.3 | 3.6 | 4.1 | 2.52 | 0.87 |
+
+### Default threading
+
+Go uses every core where it parallelises (column decoding of Parquet
+reads, CSV writing, filters, factorisation, sorting); pyarrow its thread
+pools (Parquet and Feather reads, the conversion from pandas before a
+Parquet write); pandas' operations are single-threaded. For the
+operations this compares a multi-threaded Go with a single-threaded
+pandas, so the table above is the fair one; for the I/O both sides are
+multi-threaded.
+
+| operation | main | this PR | pandas | main/pandas | PR/pandas |
+|---|---:|---:|---:|---:|---:|
+| write Parquet | 139.3 | 101.1 | 90.2 | 1.54 | 1.12 |
+| read Parquet | 24.8 | 11.8 | 15.9 | 1.56 | 0.74 |
+| write IPC file | 11.4 | 8.0 | 17.7 | 0.64 | 0.45 |
+| read IPC file | 6.9 | 3.2 | 3.4 | 2.03 | 0.95 |
+| groupby_sum | 4.1 | 3.2 | 5.8 | 0.70 | 0.55 |
+| groupby_sum_string | 4.3 | 3.1 | 11.7 | 0.36 | 0.26 |
+| sort_values | 22.0 | 19.6 | 37.9 | 0.58 | 0.52 |
+| filter | 2.2 | 2.0 | 4.2 | 0.53 | 0.48 |
+| merge | 8.6 | 6.9 | 12.8 | 0.67 | 0.54 |
+| to_datetime | 16.8 | 17.8 | 108.3 | 0.16 | 0.16 |
+| to_datetime_format | 1183.4 | 23.3 | 106.7 | 11.09 | 0.22 |
+| write_csv | 37.6 | 36.2 | 1174.9 | 0.03 | 0.03 |
+| string_eq | 11.3 | 0.3 | 1.2 | 9.40 | 0.25 |
+| string_isin | 3.2 | 0.6 | 4.1 | 0.78 | 0.14 |
+
+### What changed
+
+- **Arrow IPC and Parquet reads hand the buffers over.** A read with the
+  Go allocator owns its records, whose buffers are ordinary Go memory that
+  `Release` never frees or reuses: a column in one chunk keeps the chunk's
+  values buffer, strings slice the chunk's bytes, category codes are the
+  dictionary indices when the dictionary is already the categories. Any
+  other allocator, and `FromRecord`, `FromRecords` and `FromTable` (whose
+  caller keeps the record), still copy.
+- **Parquet string columns stored dictionary-encoded throughout** (per the
+  page encoding statistics) are read as dictionaries and laid out as
+  strings sharing each entry's bytes.
+- **Parquet writes spare arrow-go two kinds of per-value hashing** that it
+  would undo anyway: numeric chunks with more distinct values than the
+  dictionary page holds are written plain from the start, and string
+  chunks whose distinct values fit it are handed over as dictionary
+  arrays. See parquetio/plan.go.
+- **Datetime layouts are planned once** (the strftime translation was
+  rebuilt for every value): a fixed-width layout is read field by field,
+  anything else still goes to `time.Parse`.
+- **String comparison and isin** have direct loops; coding strings
+  (group-by keys, isin) caches by a string's address and length, so values
+  that share their bytes are not hashed again; one int64 group key of
+  narrow range is coded in key order from a presence table; inner and left
+  merges skip the left-row buckets they never read; a filtered range index
+  keeps the positions as its labels; a large read converts its columns
+  concurrently.
+
+### Results unchanged
+
+- Every Arrow IPC file and stream written is byte-identical to main's
+  (SHA-256 over 20 files: 5 frames, file and stream, LZ4 and Zstd).
+- Parquet files whose chunks are small (row groups under 131,072 rows) or
+  uncompressed are byte-identical too. The others differ in encodings and
+  page layout only: a column with too many distinct values for a
+  dictionary has no dictionary page (and the file is smaller: the
+  200,000-row bench frame 3.73 → 2.87 MB, a 300,000-row mixed one 8.53 →
+  6.73 MB), and a string column handed over as a dictionary has one data
+  page per row group. Statistics (null count, number of values, min, max)
+  are identical in every column chunk, and pyarrow
+  (`pq.read_table(...).equals`, metadata included) and pandas
+  (`read_parquet(...).equals`, dtypes and index) read identical tables
+  from main's files and from this branch's, for all 20 files compared.
+- Reads through the zero-copy path give frames identical to the copying
+  path, the bytes of every numeric slot included (`TestAdoptMatchesCopy`
+  in arrowio and parquetio, over every fixture and round trip).
+- Each new fast path is tested against the general path it short-cuts.
+
+### Still slower than pandas or pyarrow
+
+- **write Parquet: ~1.2x pyarrow on one thread** (~1.1x with default
+  threading). A third of the remaining time is arrow-go's Snappy encoder
+  (klauspost/compress `s2.EncodeSnappyBetter`, ~33 ms of ~110), and ~12 ms
+  the `UniqueArray` arrow-go runs over each dictionary column's indices
+  for its statistics. s2's standard Snappy mode is 2.7x faster on these
+  pages, for 12% larger output, but can only be swapped in through
+  arrow-go's process-wide codec registry, which would change every arrow-go
+  writer in a program importing parquetio; that is not done here.
+- **filter: ~1.7x pandas on one thread** (0.5x with default threading).
+  The work itself is faster than pandas' (3.1 ms with the collector off,
+  against 4.0 ms); the rest is Go's garbage collector, which on one core
+  spends ~45% of the time marking the table's string column, 10^6 string
+  headers (pandas 3 stores strings Arrow-style, without pointers). An
+  Arrow-style string column is the fix, and a larger change than this one.
+
 ## Operations on a table
 
 The table is built identically, value for value, by `bench_test.go` and
@@ -23,6 +160,8 @@ The table is built identically, value for value, by `bench_test.go` and
   pandas: `memory_usage(deep=True)`; polars: `estimated_size()`)
 
 Reproduce: `sh bench/run.sh 1000000 5 > out.txt && python3 bench/medians.py out.txt`.
+
+The runs below predate the changes of 2026-10-17 (see the section above).
 
 ### Run A — load average 13–18 (10^6: 5 rounds, 10^7: 3 rounds)
 
@@ -184,7 +323,10 @@ work on string headers.
 ## Arrow and Parquet: performance
 
 All measurements write and read a 10^6-row frame in memory, comparing
-`arrowio` (IPC) and `parquetio` (Parquet) with pandas (pyarrow engine). They were taken on 2026-10-10.
+`arrowio` (IPC) and `parquetio` (Parquet) with pandas (pyarrow engine). They were taken on 2026-10-10,
+before the changes of 2026-10-17: the section at the top of this page has
+the current figures, before and after; "Where the time goes" below is
+updated.
 
 ### Setup
 
@@ -261,28 +403,26 @@ py 7 161.3 27.1 33.2 5.8
 
 ### Where the time goes
 
-**Parquet write.** About 70% of the allocations happen in arrow-go's
-dictionary encoder for byte arrays: `hashing.(*BinaryMemoTable).InsertOrGet`
-makes about one allocation per string value (1.0 M allocations per write of the 10^6-row frame). pyarrow uses the same
-encoding, with dictionaries on by default, but in C++. Our conversion
-itself shares the numeric buffers and adds one pass for strings.
+(2026-10-17, after the changes; single-threaded profiles.)
 
-**Parquet read.** The time is dominated by arrow-go's column decoding, which
-runs in parallel across columns. Our conversion is a minority of the
-profile:
+**Parquet write.** About a third of the time is the Snappy encoder
+(`s2.EncodeSnappyBetter`), an eighth the `UniqueArray` arrow-go runs over
+the indices of each dictionary column for its statistics, and most of the
+rest arrow-go's page building and level and RLE encoding. Our conversion
+and planning (`ToRecord`, the distinct-value probe, the string
+dictionaries) is under a tenth.
 
-- copying the validity bitmaps (with `bitutil.CopyBitmap`)
-- one copy of each numeric buffer into the frame's own array
-- one string allocation per chunk for the text
+**Parquet read.** Snappy decoding, arrow-go's record readers (whose output
+buffers the frame now keeps), and the Go runtime faulting in fresh memory:
+arrow-go allocates about 160 MB to read this frame.
 
-**IPC read.** pyarrow's `to_pandas` is mostly zero-copy for numeric
-columns, so pandas pays almost nothing to read them. We copy every column
-once into storage the frame owns, because go-ndarray cannot adopt foreign
-memory. The string column also gets its `[]string` headers built, and then
-copied once more by the core's constructor.
+**IPC read.** The copy of the file's bytes into arrow-go's buffers (a
+`bytes.Reader` gives no zero-copy access), then 10^6 string headers to
+build; the frame keeps the numeric, timestamp and category buffers and the
+string bytes as read.
 
-**IPC write.** This is zero-copy for numeric and datetime columns, which is
-why it beats pandas.
+**IPC write.** Zero-copy for numeric, datetime and category columns; the
+string column is laid out once.
 
 ### How to rerun
 
@@ -297,5 +437,6 @@ for i in 1 2 3 4 5 6 7; do
 done
 ```
 
-The figures above were taken before Parquet moved to `parquetio`. The
-Parquet code itself did not change in the split, only its package.
+For one thread each, run it with `GOMAXPROCS=1 THREADS=1` in the
+environment (`bench_pandas.py` reads `THREADS`). The operations:
+`[THREADS=1] sh bench/run.sh 1000000 7 > out.txt && python3 bench/medians.py out.txt`.
