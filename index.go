@@ -2,8 +2,10 @@ package dataframe
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 	"sync"
+	"unsafe"
 
 	"github.com/go-ndarray/ndarray"
 )
@@ -204,6 +206,18 @@ func (ix *Index) take(idx []int) *Index {
 		levels[k] = ix.levels[k].take(idx)
 	}
 	return labelIndex(ix.names, levels)
+}
+
+// takeOwned is take for positions, none negative, that the caller hands
+// over. Taken from a range index that starts at 0 by steps of 1, the
+// labels are the positions themselves: on a 64-bit machine, the int
+// positions are the int64 labels, kept as they are.
+func (ix *Index) takeOwned(idx []int) *Index {
+	if _, ok := asRange(idx); !ok && ix.levels == nil && ix.start == 0 && ix.step == 1 && strconv.IntSize == 64 {
+		labels := unsafe.Slice((*int64)(unsafe.Pointer(unsafe.SliceData(idx))), len(idx))
+		return labelIndex(ix.names, []column{&col[int64]{dt: Int64, data: labels, o: opsInt64}})
+	}
+	return ix.take(idx)
 }
 
 // slice returns the index of rows [i, j).

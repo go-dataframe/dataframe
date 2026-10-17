@@ -71,9 +71,125 @@ var fallbackLayouts = []string{
 // layouts; otherwise layout is a Go time layout, or a strftime pattern such
 // as "%d/%m/%Y" (anything with a %).
 func parseTime(s, layout string) (int64, error) {
+	return newTimeParser(layout).parse(s)
+}
+
+// timeParser is parseTime for one layout, translated (from strftime) and
+// planned once, to parse many strings.
+type timeParser struct {
+	layout string     // a Go layout, or "" for ISO 8601 and the fallbacks
+	plan   []layoutOp // the fixed-width numeric reading of layout, or nil
+}
+
+// layoutOp is one step of a fixed-width plan: a field of width digits
+// (field > 0), or a literal byte.
+type layoutOp struct {
+	field   layoutField
+	width   int
+	literal byte
+}
+
+type layoutField uint8
+
+const (
+	literal layoutField = iota
+	fieldYear
+	fieldMonth
+	fieldDay
+	fieldHour
+	fieldMinute
+	fieldSecond
+)
+
+// layoutTokens are the Go layout elements a plan reads, longest first.
+var layoutTokens = []struct {
+	tok   string
+	field layoutField
+}{
+	{"2006", fieldYear}, {"01", fieldMonth}, {"02", fieldDay},
+	{"15", fieldHour}, {"04", fieldMinute}, {"05", fieldSecond},
+}
+
+func newTimeParser(layout string) *timeParser {
+	if strings.Contains(layout, "%") {
+		layout = strftimeLayout(layout)
+	}
+	return &timeParser{layout: layout, plan: planLayout(layout)}
+}
+
+// planLayout returns the plan of a layout made only of the year, month,
+// day, hour, minute and second elements and the separators - / : space T,
+// each element at most once, year month and day all there; nil otherwise.
+// A string that fits the plan exactly (each field all digits, at its fixed
+// width) is one time.Parse reads the same way; any other is left to it.
+func planLayout(layout string) []layoutOp {
+	var plan []layoutOp
+	var seen [fieldSecond + 1]bool
+next:
+	for i := 0; i < len(layout); {
+		for _, t := range layoutTokens {
+			if strings.HasPrefix(layout[i:], t.tok) {
+				if seen[t.field] {
+					return nil
+				}
+				seen[t.field] = true
+				plan = append(plan, layoutOp{field: t.field, width: len(t.tok)})
+				i += len(t.tok)
+				continue next
+			}
+		}
+		switch c := layout[i]; c {
+		case '-', '/', ':', ' ', 'T':
+			plan = append(plan, layoutOp{literal: c})
+			i++
+		default:
+			return nil
+		}
+	}
+	if !seen[fieldYear] || !seen[fieldMonth] || !seen[fieldDay] {
+		return nil
+	}
+	return plan
+}
+
+// fast parses s by the plan, or reports false: a string of another shape,
+// a field out of range, or a year outside 1678-2261 (the nanosecond range,
+// with room to spare), which time.Parse then handles, errors included.
+func (p *timeParser) fast(s string) (int64, bool) {
+	var v [fieldSecond + 1]int
+	i := 0
+	for _, op := range p.plan {
+		if op.field == literal {
+			if i >= len(s) || s[i] != op.literal {
+				return 0, false
+			}
+			i++
+			continue
+		}
+		n, ok := num(s, i, op.width)
+		if !ok {
+			return 0, false
+		}
+		v[op.field] = n
+		i += op.width
+	}
+	y, mo, d := v[fieldYear], v[fieldMonth], v[fieldDay]
+	switch {
+	case i != len(s), y < 1678, y > 2261, mo < 1, mo > 12, d < 1, d > daysIn[mo],
+		mo == 2 && d == 29 && !isLeap(y), v[fieldHour] > 23, v[fieldMinute] > 59, v[fieldSecond] > 59:
+		return 0, false
+	}
+	return daysFromCivil(y, mo, d)*86400e9 + int64(v[fieldHour])*3600e9 +
+		int64(v[fieldMinute])*60e9 + int64(v[fieldSecond])*1e9, true
+}
+
+func (p *timeParser) parse(s string) (int64, error) {
+	layout := p.layout
 	if layout != "" {
-		if strings.Contains(layout, "%") {
-			layout = strftimeLayout(layout)
+		if p.plan != nil {
+			if ns, ok := p.fast(s); ok {
+				return ns, nil
+			}
 		}
 		t, err := time.Parse(layout, s)
 		if err != nil {
@@ -215,15 +331,14 @@ func applyZone(z string, ns int64) (int64, bool) {
 }
 
 // strftimeLayout translates the common strftime directives to a Go layout.
-func strftimeLayout(f string) string {
-	r := strings.NewReplacer(
-		"%Y", "2006", "%y", "06", "%m", "01", "%d", "02", "%H", "15",
-		"%I", "03", "%M", "04", "%S", "05", "%f", "000000", "%p", "PM",
-		"%b", "Jan", "%B", "January", "%a", "Mon", "%A", "Monday",
-		"%z", "-0700", "%Z", "MST", "%j", "002", "%%", "%",
-	)
-	return r.Replace(f)
-}
+func strftimeLayout(f string) string { return strftimeReplacer.Replace(f) }
+
+var strftimeReplacer = strings.NewReplacer(
+	"%Y", "2006", "%y", "06", "%m", "01", "%d", "02", "%H", "15",
+	"%I", "03", "%M", "04", "%S", "05", "%f", "000000", "%p", "PM",
+	"%b", "Jan", "%B", "January", "%a", "Mon", "%A", "Monday",
+	"%z", "-0700", "%Z", "MST", "%j", "002", "%%", "%",
+)
 
 // ToDatetime converts a series to datetime. A string series is parsed (ISO
 // 8601 and common layouts, or the given layout: a Go layout or a strftime
@@ -239,11 +354,12 @@ func ToDatetime(s *Series, layout ...string) (*Series, error) {
 	case *col[string]:
 		out := makeCol[int64](Datetime, len(c.data))
 		out.valid = c.valid.clone()
+		p := newTimeParser(l)
 		for i, v := range c.data {
 			if c.isNA(i) {
 				continue
 			}
-			ns, err := parseTime(strings.TrimSpace(v), l)
+			ns, err := p.parse(strings.TrimSpace(v))
 			if err != nil {
 				return nil, err
 			}

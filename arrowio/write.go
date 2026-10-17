@@ -12,6 +12,7 @@ import (
 	"github.com/apache/arrow-go/v18/arrow/array"
 	"github.com/apache/arrow-go/v18/arrow/memory"
 	"github.com/go-dataframe/dataframe"
+	"github.com/go-dataframe/dataframe/internal/rawcol"
 	"github.com/go-ndarray/ndarray"
 )
 
@@ -131,7 +132,7 @@ func toArray(s *dataframe.Series, cfg *config) (arrow.Array, bool, error) {
 		t := &arrow.TimestampType{Unit: arrow.Nanosecond, TimeZone: cfg.timeZone}
 		a = fixed(t, data[int64](s), valid, n)
 	case dataframe.String, dataframe.Period:
-		a = stringArray(s.Strings(), valid)
+		a = stringArray(text(s), valid)
 	case dataframe.Category:
 		a = dictArray(s)
 	default:
@@ -251,11 +252,14 @@ func boolArray(d []bool, valid []uint64) arrow.Array {
 var largeStrings = math.MaxInt32
 
 // stringArray builds an Arrow utf8 array, or large_utf8 when the bytes
-// overflow 32-bit offsets.
+// overflow 32-bit offsets. A missing value is written empty, whatever strs
+// holds in its slot.
 func stringArray(strs []string, valid []uint64) arrow.Array {
 	total := 0
-	for _, s := range strs {
-		total += len(s)
+	for i, s := range strs {
+		if isValid(valid, i) {
+			total += len(s)
+		}
 	}
 	if total > largeStrings {
 		return offsetStrings[int64](arrow.BinaryTypes.LargeString, strs, total, valid)
@@ -268,7 +272,9 @@ func offsetStrings[O int32 | int64](dt arrow.DataType, strs []string, total int,
 	offs := make([]O, n+1)
 	buf := make([]byte, 0, total)
 	for i, s := range strs {
-		buf = append(buf, s...)
+		if isValid(valid, i) {
+			buf = append(buf, s...)
+		}
 		offs[i+1] = O(len(buf))
 	}
 	vb, nulls := validityBuffer(valid, n)
@@ -277,20 +283,49 @@ func offsetStrings[O int32 | int64](dt arrow.DataType, strs []string, total int,
 	return array.MakeFromData(ad)
 }
 
+// text returns a string series' storage, shared, or a period series'
+// values formatted.
+func text(s *dataframe.Series) []string {
+	if d, _, ok := rawcol.Strings(s); ok {
+		return d
+	}
+	return s.Strings()
+}
+
+// bitsSet counts the set bits of a bitmap.
+func bitsSet(v []uint64) int {
+	n := 0
+	for _, w := range v {
+		n += bits.OnesCount64(w)
+	}
+	return n
+}
+
 // dictType is the Arrow type of a category column.
 var dictType = &arrow.DictionaryType{IndexType: arrow.PrimitiveTypes.Int32, ValueType: arrow.BinaryTypes.String}
 
-// dictArray converts a category series to dictionary<int32, utf8>.
+// dictArray converts a category series to dictionary<int32, utf8>. The
+// codes are shared when nothing is missing; otherwise they are copied, with
+// 0 in the missing slots, and the validity bitmap with its bits past the
+// end set.
 func dictArray(s *dataframe.Series) arrow.Array {
-	codes, cats, _ := s.Categorical()
-	var valid []uint64
-	for i, k := range codes {
-		if k < 0 {
-			if valid == nil {
-				valid = allValid(len(codes))
+	codes, valid, cats := rawcol.Codes(s)
+	n := len(codes)
+	if valid != nil {
+		valid = append([]uint64(nil), valid[:(n+63)>>6]...)
+		if r := n & 63; r != 0 {
+			valid[len(valid)-1] |= math.MaxUint64 << uint(r)
+		}
+		if bitsSet(valid) == 64*len(valid) {
+			valid = nil
+		}
+	}
+	if valid != nil {
+		codes = append([]int32(nil), codes...)
+		for i := range codes {
+			if !isValid(valid, i) {
+				codes[i] = 0
 			}
-			valid[i>>6] &^= 1 << (uint(i) & 63)
-			codes[i] = 0
 		}
 	}
 	idx := fixed(arrow.PrimitiveTypes.Int32, codes, valid, len(codes))

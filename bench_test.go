@@ -1,10 +1,12 @@
 package dataframe
 
 import (
+	"bytes"
 	"os"
 	"runtime"
 	"strconv"
 	"testing"
+	"time"
 )
 
 // The benchmarks below run on the same synthetic table as
@@ -91,6 +93,68 @@ func BenchmarkMerge(b *testing.B) {
 	b.ResetTimer()
 	for b.Loop() {
 		Merge(df, r, MergeOptions{On: []string{"key"}})
+	}
+}
+
+// benchDates returns n instants of 2020 as "YYYY-MM-DD HH:MM:SS" text, as
+// bench_pandas.py builds them: 1577836800 + (i*7919 mod 31536000) seconds.
+func benchDates(n int) *Series {
+	d := make([]string, n)
+	for i := range n {
+		sec := 1577836800 + int64(i)*7919%31536000
+		d[i] = time.Unix(sec, 0).UTC().Format(time.DateTime)
+	}
+	s, _ := NewSeries("d", d)
+	return s
+}
+
+func BenchmarkToDatetime(b *testing.B) {
+	s := benchDates(benchN())
+	b.ResetTimer()
+	for b.Loop() {
+		if _, err := ToDatetime(s); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkToDatetimeFormat(b *testing.B) {
+	s := benchDates(benchN())
+	b.ResetTimer()
+	for b.Loop() {
+		if _, err := ToDatetime(s, "%Y-%m-%d %H:%M:%S"); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+// BenchmarkWriteCSVTable writes the operations table as CSV, index
+// included, as pandas' df.to_csv() does.
+func BenchmarkWriteCSVTable(b *testing.B) {
+	df := benchFrame(benchN())
+	var buf bytes.Buffer
+	b.ResetTimer()
+	for b.Loop() {
+		buf.Reset()
+		if err := df.WriteCSV(&buf); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkStringEq(b *testing.B) {
+	cat, _ := benchFrame(benchN()).Column("cat")
+	b.ResetTimer()
+	for b.Loop() {
+		cat.Eq("c7")
+	}
+}
+
+func BenchmarkStringIsIn(b *testing.B) {
+	cat, _ := benchFrame(benchN()).Column("cat")
+	b.ResetTimer()
+	for b.Loop() {
+		cat.IsIn("c1", "c22", "c57")
 	}
 }
 
