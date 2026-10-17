@@ -13,6 +13,7 @@ import (
 
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/array"
+	"github.com/apache/arrow-go/v18/arrow/ipc"
 	"github.com/apache/arrow-go/v18/arrow/memory"
 	"github.com/go-dataframe/dataframe"
 	"github.com/go-dataframe/dataframe/internal/rawcol"
@@ -256,4 +257,33 @@ func mustRecord(t *testing.T, df *dataframe.DataFrame) arrow.RecordBatch {
 		t.Fatal(err)
 	}
 	return rec
+}
+
+// A large_utf8 column read from a file keeps its int64 offsets, and is
+// written back as utf8 with the same values.
+func TestLargeStringsRoundTrip(t *testing.T) {
+	b := array.NewLargeStringBuilder(memory.DefaultAllocator)
+	defer b.Release()
+	b.AppendValues([]string{"a", "", "long value", "z"}, []bool{true, false, true, true})
+	col := b.NewArray()
+	defer col.Release()
+	schema := arrow.NewSchema([]arrow.Field{{Name: "s", Type: arrow.BinaryTypes.LargeString, Nullable: true}}, nil)
+	rec := array.NewRecordBatch(schema, []arrow.Array{col}, 4)
+	defer rec.Release()
+	var file bytes.Buffer
+	w, _ := ipc.NewFileWriter(&file, ipc.WithSchema(schema))
+	if err := w.Write(rec); err != nil {
+		t.Fatal(err)
+	}
+	w.Close()
+	df := dataframe.Must(ReadIPCFile(bytes.NewReader(file.Bytes())))
+	if _, offs, _, _ := rawcol.Strings(df.Series()[0]); fmt.Sprintf("%T", offs) != "[]int64" {
+		t.Fatalf("offsets %T, want []int64", offs)
+	}
+	var out bytes.Buffer
+	if err := WriteIPCFile(&out, df); err != nil {
+		t.Fatal(err)
+	}
+	back := dataframe.Must(ReadIPCFile(bytes.NewReader(out.Bytes())))
+	equalItems(t, "large", back.Series()[0].Items(), []any{"a", nil, "long value", "z"})
 }

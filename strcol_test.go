@@ -173,12 +173,20 @@ func TestStrColAgainstModel(t *testing.T) {
 					}
 				}
 			}
-			set := map[string]bool{"": true, "k7": true, "a-longer-value-3": true, "abcdefgh": true}
-			in := make([]bool, n)
-			c.(stringCol).isInSet(map[string]struct{}{"": {}, "k7": {}, "a-longer-value-3": {}, "abcdefgh": {}}, in)
-			for k := range m.v {
-				if in[k] != (m.ok[k] && set[m.v[k]]) {
-					t.Fatalf("n=%d: isin at %d", n, k)
+			// A few short members, then more than the slice holds.
+			for _, members := range [][]string{{"", "k7", "a-longer-value-3", "abcdefgh"},
+				{"", "a", "b", "abc", "k1", "k2", "k3", "k4", "k5", "k6", "k7", "9", "a-longer-value-3"}} {
+				set := map[string]struct{}{}
+				for _, v := range members {
+					set[v] = struct{}{}
+				}
+				in := make([]bool, n)
+				c.(stringCol).isInSet(set, in)
+				for k := range m.v {
+					_, want := set[m.v[k]]
+					if in[k] != (m.ok[k] && want) {
+						t.Fatalf("n=%d: isin at %d", n, k)
+					}
 				}
 			}
 			// lookup, fill, nulls, convert, equal, compare.

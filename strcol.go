@@ -1,9 +1,12 @@
 package dataframe
 
 import (
+	"encoding/binary"
 	"fmt"
 	"math"
+	mbits "math/bits"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"unsafe"
@@ -39,6 +42,21 @@ type stringCol interface {
 }
 
 func (c *strCol[O]) at(i int) string { return c.data[c.offs[i]:c.offs[i+1]] }
+
+// key is shortKey of value i, read as one 8-byte load where the buffer
+// has 8 bytes from the value's start.
+func (c *strCol[O]) key(i int) (uint64, bool) {
+	lo, hi := int(c.offs[i]), int(c.offs[i+1])
+	n := hi - lo
+	if n > 7 {
+		return 0, false
+	}
+	if lo+8 > len(c.data) {
+		return shortKey(c.data[lo:hi])
+	}
+	w := binary.LittleEndian.Uint64(unsafe.Slice(unsafe.StringData(c.data[lo:]), 8))
+	return w&(1<<(8*uint(n))-1) | uint64(n)<<56, true
+}
 
 func (c *strCol[O]) raw() (string, any) { return c.data, c.offs }
 
@@ -329,13 +347,12 @@ func (c *strCol[O]) cmpScalar(op cmpOp, x string, out []bool) {
 	parallel(len(out), func(lo, hi int) {
 		d, offs := c.data, c.offs
 		switch op {
-		case cmpEq:
+		case cmpEq, cmpNe:
+			// Lengths first: most values differ from x in length already.
+			eq, nx := op == cmpEq, O(len(x))
 			for i := lo; i < hi; i++ {
-				out[i] = d[offs[i]:offs[i+1]] == x
-			}
-		case cmpNe:
-			for i := lo; i < hi; i++ {
-				out[i] = d[offs[i]:offs[i+1]] != x
+				a, b := offs[i], offs[i+1]
+				out[i] = (b-a == nx && d[a:b] == x) == eq
 			}
 		default:
 			for i := lo; i < hi; i++ {
@@ -352,20 +369,33 @@ func (c *strCol[O]) cmpScalar(op cmpOp, x string, out []bool) {
 	})
 }
 
-// isInSet sets out[i] when value i is present and in m.
+// isInSet sets out[i] when value i is present and in m. A short value can
+// only equal a short member: it is looked up by its packed key, in a slice
+// when there are few such members.
 func (c *strCol[O]) isInSet(m map[string]struct{}, out []bool) {
-	short := shortSet(m)
+	var keys []uint64
+	var short shortCodes
+	for v := range m {
+		if k, ok := shortKey(v); ok {
+			keys = append(keys, k)
+			short.put(k, 0)
+		}
+	}
+	few := len(keys) <= 8
 	parallel(len(out), func(lo, hi int) {
 		for i := lo; i < hi; i++ {
 			if !c.valid.get(i) {
 				continue
 			}
-			v := c.at(i)
-			if k, ok := shortKey(v); ok {
-				_, out[i] = short[k]
-				continue
+			k, ok := c.key(i)
+			switch {
+			case !ok:
+				_, out[i] = m[c.at(i)]
+			case few:
+				out[i] = slices.Contains(keys, k)
+			default:
+				_, out[i] = short.get(k)
 			}
-			_, out[i] = m[v]
 		}
 	})
 }
@@ -383,18 +413,6 @@ func shortKey(s string) (uint64, bool) {
 	return k, true
 }
 
-// shortSet returns the short keys of m: the set to look a short value up
-// in, since a short value can only equal a short one.
-func shortSet(m map[string]struct{}) map[uint64]struct{} {
-	s := map[uint64]struct{}{}
-	for v := range m {
-		if k, ok := shortKey(v); ok {
-			s[k] = struct{}{}
-		}
-	}
-	return s
-}
-
 // codeRange codes rows [lo, hi) into codes (-1 for missing) in d. A value
 // of up to 7 bytes is coded through a table keyed by its packed bytes,
 // which costs no hashing of a string; a longer one through d's map.
@@ -405,17 +423,16 @@ func (c *strCol[O]) codeRange(d *dict[string], codes []int32, lo, hi int) {
 			codes[i] = -1
 			continue
 		}
-		v := c.data[c.offs[i]:c.offs[i+1]]
-		k, ok := shortKey(v)
+		k, ok := c.key(i)
 		if !ok {
-			codes[i] = d.add(v)
+			codes[i] = d.add(c.at(i))
 			continue
 		}
 		if code, found := short.get(k); found {
 			codes[i] = code
 			continue
 		}
-		code := d.add(v)
+		code := d.add(c.at(i))
 		short.put(k, code)
 		codes[i] = code
 	}
@@ -428,21 +445,11 @@ type shortCodes struct {
 	keys  []uint64
 	codes []int32
 	n     int
+	shift uint  // 64 - log2(len(keys))
 	empty int32 // the empty string's code + 1, 0 when not seen
 }
 
-func (t *shortCodes) slot(k uint64) int {
-	return int((k * 0x9E3779B97F4A7C15) >> (64 - uint(bitsLen(len(t.keys)-1))))
-}
-
-func bitsLen(x int) int {
-	n := 0
-	for x > 0 {
-		n++
-		x >>= 1
-	}
-	return n
-}
+func (t *shortCodes) slot(k uint64) int { return int((k * 0x9E3779B97F4A7C15) >> t.shift) }
 
 func (t *shortCodes) get(k uint64) (int32, bool) {
 	if k == 0 {
@@ -483,6 +490,7 @@ func (t *shortCodes) grow() {
 	old, oldCodes := t.keys, t.codes
 	t.keys = make([]uint64, max(64, 2*len(old)))
 	t.codes = make([]int32, len(t.keys))
+	t.shift = uint(64 - mbits.Len(uint(len(t.keys)-1)))
 	t.n = 0
 	for i, k := range old {
 		if k != 0 {
