@@ -115,8 +115,11 @@ func joinRows(lk, rk []column, how string) ([]int, []int, error) {
 		}
 	}
 	n++
-	lrows := bucket(ca, n)
 	rrows := bucket(cb, n)
+	var lrows [][]int // the left rows of each code, for right and outer joins
+	if how != "inner" && how != "left" {
+		lrows = bucket(ca, n)
+	}
 	var li, ri []int
 	emit := func(c int, i int, fromLeft bool) {
 		other := rrows[c]
