@@ -21,6 +21,8 @@ type column interface {
 	validity() bitmap
 	// take gathers the rows at idx; a negative position gives a missing row.
 	take(idx []int) column
+	// takeNonNeg is take for positions known to be none negative.
+	takeNonNeg(idx []int) column
 	slice(i, j int) column
 	// value returns the element as a Go value, nil when missing.
 	value(i int) any
@@ -167,6 +169,21 @@ func (c *col[T]) naCount() int {
 }
 
 func (c *col[T]) take(idx []int) column {
+	out := c.gather(idx)
+	out.valid = c.valid.take(idx)
+	return out
+}
+
+func (c *col[T]) takeNonNeg(idx []int) column {
+	out := c.gather(idx)
+	if c.valid != nil {
+		out.valid = c.valid.take(idx)
+	}
+	return out
+}
+
+// gather copies the values at idx, zero at a negative position.
+func (c *col[T]) gather(idx []int) *col[T] {
 	out := c.blank(len(idx))
 	parallel(len(idx), func(lo, hi int) {
 		d, src := out.data[lo:hi], c.data
@@ -176,7 +193,6 @@ func (c *col[T]) take(idx []int) column {
 			}
 		}
 	})
-	out.valid = c.valid.take(idx)
 	return out
 }
 

@@ -288,7 +288,7 @@ func (df *DataFrame) take(idx []int) *DataFrame {
 // over: a default range index then keeps them as its labels.
 func (df *DataFrame) takeOwned(idx []int) *DataFrame {
 	cols := make([]column, len(df.cols))
-	eachColumn(len(idx), len(df.cols), func(k int) { cols[k] = df.cols[k].take(idx) })
+	eachColumn(len(idx), len(df.cols), func(k int) { cols[k] = df.cols[k].takeNonNeg(idx) })
 	return &DataFrame{index: df.index.takeOwned(idx), names: df.names, cols: cols}
 }
 

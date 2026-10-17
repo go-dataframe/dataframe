@@ -6,7 +6,6 @@ import (
 	"math"
 	mbits "math/bits"
 	"runtime"
-	"slices"
 	"strings"
 	"sync"
 	"unsafe"
@@ -42,21 +41,6 @@ type stringCol interface {
 }
 
 func (c *strCol[O]) at(i int) string { return c.data[c.offs[i]:c.offs[i+1]] }
-
-// key is shortKey of value i, read as one 8-byte load where the buffer
-// has 8 bytes from the value's start.
-func (c *strCol[O]) key(i int) (uint64, bool) {
-	lo, hi := int(c.offs[i]), int(c.offs[i+1])
-	n := hi - lo
-	if n > 7 {
-		return 0, false
-	}
-	if lo+8 > len(c.data) {
-		return shortKey(c.data[lo:hi])
-	}
-	w := binary.LittleEndian.Uint64(unsafe.Slice(unsafe.StringData(c.data[lo:]), 8))
-	return w&(1<<(8*uint(n))-1) | uint64(n)<<56, true
-}
 
 func (c *strCol[O]) raw() (string, any) { return c.data, c.offs }
 
@@ -229,6 +213,14 @@ func (c *strCol[O]) take(idx []int) column {
 	return out.withValidity(c.valid.take(idx))
 }
 
+func (c *strCol[O]) takeNonNeg(idx []int) column {
+	out := c.gather(idx)
+	if c.valid == nil {
+		return out
+	}
+	return out.withValidity(c.valid.take(idx))
+}
+
 func (c *strCol[O]) slice(i, j int) column {
 	return &strCol[O]{data: c.data, offs: c.offs[i : j+1 : j+1], valid: c.valid.slice(i, j)}
 }
@@ -382,18 +374,33 @@ func (c *strCol[O]) isInSet(m map[string]struct{}, out []bool) {
 		}
 	}
 	few := len(keys) <= 8
+	// The few keys, padded with one no string packs to (length 8).
+	var set [8]uint64
+	for j := range set {
+		set[j] = 8 << 56
+	}
+	copy(set[:], keys)
 	parallel(len(out), func(lo, hi int) {
+		d, offs := c.data, c.offs
 		for i := lo; i < hi; i++ {
 			if !c.valid.get(i) {
 				continue
 			}
-			k, ok := c.key(i)
-			switch {
-			case !ok:
-				_, out[i] = m[c.at(i)]
-			case few:
-				out[i] = slices.Contains(keys, k)
-			default:
+			a, b := int(offs[i]), int(offs[i+1])
+			if b-a > 7 {
+				_, out[i] = m[d[a:b]]
+				continue
+			}
+			var k uint64
+			if a+8 <= len(d) {
+				k = binary.LittleEndian.Uint64(unsafe.Slice(unsafe.StringData(d[a:]), 8))&(1<<(8*uint(b-a))-1) | uint64(b-a)<<56
+			} else {
+				k, _ = shortKey(d[a:b])
+			}
+			if few {
+				out[i] = k == set[0] || k == set[1] || k == set[2] || k == set[3] ||
+					k == set[4] || k == set[5] || k == set[6] || k == set[7]
+			} else {
 				_, out[i] = short.get(k)
 			}
 		}
@@ -423,10 +430,16 @@ func (c *strCol[O]) codeRange(d *dict[string], codes []int32, lo, hi int) {
 			codes[i] = -1
 			continue
 		}
-		k, ok := c.key(i)
-		if !ok {
-			codes[i] = d.add(c.at(i))
+		a, b := int(c.offs[i]), int(c.offs[i+1])
+		if b-a > 7 {
+			codes[i] = d.add(c.data[a:b])
 			continue
+		}
+		var k uint64
+		if a+8 <= len(c.data) {
+			k = binary.LittleEndian.Uint64(unsafe.Slice(unsafe.StringData(c.data[a:]), 8))&(1<<(8*uint(b-a))-1) | uint64(b-a)<<56
+		} else {
+			k, _ = shortKey(c.data[a:b])
 		}
 		if code, found := short.get(k); found {
 			codes[i] = code
