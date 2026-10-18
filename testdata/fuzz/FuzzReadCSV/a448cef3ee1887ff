@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte(",\nA\n,\n\"NA\",0\n\"1.#IND\",0\n\"1.#QNAN\",0\n\"NaN\",0\n\"nan\",0\n\"1.#IND\",0\n\"1.#QNAN\",0\n\"<NA>\",0\n\"NA\",0\n\"NA\",0\n\"NULL\",0\n\"NaN\",0\n\"None\",0\n\"n/a\",0\n\"nan\",0\n\"null\"")

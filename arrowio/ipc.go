@@ -1,6 +1,7 @@
 package arrowio
 
 import (
+	"fmt"
 	"io"
 	"os"
 
@@ -64,7 +65,14 @@ func WriteIPCStream(w io.Writer, df *dataframe.DataFrame, opts ...Option) error 
 // pandas' to_feather writes it), every record batch in order. The only
 // option it takes is WithAllocator.
 func ReadIPCFile(r ReadAtSeeker, opts ...Option) (*dataframe.DataFrame, error) {
+	return decoded(func() (*dataframe.DataFrame, error) { return readIPCFile(r, opts) })
+}
+
+func readIPCFile(r ReadAtSeeker, opts []Option) (*dataframe.DataFrame, error) {
 	cfg := newConfig(opts)
+	if err := checkFile(r); err != nil {
+		return nil, err
+	}
 	fr, err := ipc.NewFileReader(r, ipc.WithAllocator(cfg.mem))
 	if err != nil {
 		return nil, err
@@ -86,8 +94,14 @@ func ReadIPCFile(r ReadAtSeeker, opts ...Option) (*dataframe.DataFrame, error) {
 // ReadIPCStream reads a frame from the Arrow IPC streaming format, every
 // record batch in order. The only option it takes is WithAllocator.
 func ReadIPCStream(r io.Reader, opts ...Option) (*dataframe.DataFrame, error) {
+	return decoded(func() (*dataframe.DataFrame, error) { return readIPCStream(r, opts) })
+}
+
+func readIPCStream(r io.Reader, opts []Option) (*dataframe.DataFrame, error) {
 	cfg := newConfig(opts)
-	sr, err := ipc.NewReader(r, ipc.WithAllocator(cfg.mem))
+	mr := newCheckedMessages(r)
+	defer mr.Release()
+	sr, err := ipc.NewReaderFromMessageReader(mr, ipc.WithAllocator(cfg.mem))
 	if err != nil {
 		return nil, err
 	}
@@ -103,6 +117,18 @@ func ReadIPCStream(r io.Reader, opts ...Option) (*dataframe.DataFrame, error) {
 		return nil, err
 	}
 	return fromRecords(sr.Schema(), recs, owns(cfg.mem))
+}
+
+// decoded runs a read, turning a panic of the Arrow decoders on malformed
+// input (they index buffers by what the input declares) into an
+// ErrCorrupt.
+func decoded(read func() (*dataframe.DataFrame, error)) (df *dataframe.DataFrame, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			df, err = nil, fmt.Errorf("%w: %v", ErrCorrupt, r)
+		}
+	}()
+	return read()
 }
 
 func releaseAll(recs *[]arrow.RecordBatch) {

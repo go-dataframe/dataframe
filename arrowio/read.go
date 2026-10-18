@@ -92,6 +92,9 @@ func fromChunks(schema *arrow.Schema, chunks [][]arrow.Array, n int, own bool, a
 		return nil, err
 	}
 	fields := schema.Fields()
+	if err := checkColumns(fields, chunks, n); err != nil {
+		return nil, err
+	}
 	series := make([]*dataframe.Series, len(fields))
 	errs := make([]error, len(fields))
 	convert := func(i int) {

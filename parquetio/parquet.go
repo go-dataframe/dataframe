@@ -2,6 +2,8 @@ package parquetio
 
 import (
 	"context"
+	"encoding/base64"
+	"fmt"
 	"io"
 	"os"
 
@@ -14,6 +16,7 @@ import (
 	"github.com/apache/arrow-go/v18/parquet/pqarrow"
 	"github.com/go-dataframe/dataframe"
 	"github.com/go-dataframe/dataframe/arrowio"
+	"github.com/go-dataframe/dataframe/internal/arrowfb"
 	"github.com/go-dataframe/dataframe/internal/rawcol"
 )
 
@@ -110,10 +113,24 @@ func WriteParquetFile(path string, df *dataframe.DataFrame, opts ...Option) erro
 // ReadParquet reads a Parquet file, every row group, decoding the columns in
 // parallel, and restores the index from "pandas" metadata as
 // arrowio.FromRecord does. The only option it takes is WithAllocator.
-func ReadParquet(r arrowio.ReadAtSeeker, opts ...Option) (*dataframe.DataFrame, error) {
+func ReadParquet(r arrowio.ReadAtSeeker, opts ...Option) (df *dataframe.DataFrame, err error) {
+	// The Parquet decoders index buffers by what the file declares; a panic
+	// of theirs on a malformed file is an arrowio.ErrCorrupt.
+	defer func() {
+		if p := recover(); p != nil {
+			df, err = nil, fmt.Errorf("%w: %v", arrowio.ErrCorrupt, p)
+		}
+	}()
+	return readParquet(r, opts)
+}
+
+func readParquet(r arrowio.ReadAtSeeker, opts []Option) (*dataframe.DataFrame, error) {
 	cfg := newConfig(opts)
 	pf, err := file.NewParquetReader(r, file.WithReadProps(parquet.NewReaderProperties(cfg.mem)))
 	if err != nil {
+		return nil, err
+	}
+	if err := checkFooter(pf.MetaData()); err != nil {
 		return nil, err
 	}
 	// A string column stored dictionary-encoded throughout is read as
@@ -196,4 +213,60 @@ func ReadParquetFile(path string, opts ...Option) (*dataframe.DataFrame, error) 
 	}
 	defer f.Close()
 	return ReadParquet(f, opts...)
+}
+
+// checkFooter checks what a file's footer declares before anything else
+// is read: its column chunks and its stored Arrow schema.
+func checkFooter(md *metadata.FileMetaData) error {
+	if err := checkChunks(md); err != nil {
+		return err
+	}
+	return checkArrowSchema(md)
+}
+
+// checkChunks checks what the footer declares of each column chunk before
+// any is read: the reader allocates a chunk's declared size at once, so a
+// chunk must lie within the file, its offsets and sizes not negative, and
+// a row group with columns no negative number of rows.
+func checkChunks(md *metadata.FileMetaData) error {
+	size := md.GetSourceFileSize()
+	for g := range md.NumRowGroups() {
+		rg := md.RowGroup(g)
+		for c := range rg.NumColumns() {
+			cc, _ := rg.ColumnChunk(c) // c is in range: no error
+			start, n := cc.DataPageOffset(), cc.TotalCompressedSize()
+			if cc.HasDictionaryPage() && cc.DictionaryPageOffset() > 0 && cc.DictionaryPageOffset() < start {
+				start = cc.DictionaryPageOffset()
+			}
+			if rg.NumRows() < 0 || start < 0 || n < 0 || start > size || n > size-start {
+				return fmt.Errorf("%w: row group %d (%d rows) column %d: %d bytes at %d in a file of %d",
+					arrowio.ErrCorrupt, g, rg.NumRows(), c, n, start, size)
+			}
+		}
+	}
+	return nil
+}
+
+// checkArrowSchema checks the Arrow schema a file stores in its
+// ARROW:schema metadata (an IPC message, base64-encoded, as pqarrow
+// decodes it) before pqarrow reads it: see internal/arrowfb.
+func checkArrowSchema(md *metadata.FileMetaData) error {
+	v := md.KeyValueMetadata().FindValue("ARROW:schema")
+	if v == nil {
+		return nil
+	}
+	var decoded []byte
+	var err error
+	if len(*v)%4 == 0 {
+		decoded, err = base64.StdEncoding.DecodeString(*v)
+	}
+	if len(decoded) == 0 || err != nil {
+		if decoded, err = base64.RawStdEncoding.DecodeString(*v); err != nil {
+			return nil // pqarrow refuses it
+		}
+	}
+	if err := arrowfb.CheckFramed(decoded); err != nil {
+		return fmt.Errorf("%w: ARROW:schema: %v", arrowio.ErrCorrupt, err)
+	}
+	return nil
 }
