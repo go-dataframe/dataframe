@@ -67,6 +67,13 @@ func main() {
 	switch os.Args[1] {
 	case "measure":
 		measure(os.Args[2:])
+	case "gate":
+		if len(os.Args) != 3 {
+			fail("usage: harness gate dir")
+		}
+		if !gate(os.Args[2]) {
+			os.Exit(1)
+		}
 	case "snappy":
 		snappyCompare(5)
 	case "golden":
