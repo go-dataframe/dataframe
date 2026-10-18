@@ -105,11 +105,11 @@ func fxColumn(t *testing.T, dtype string, vals []any) column {
 		}
 		c = x
 	case "string", "category", "period":
-		x := makeCol[string](String, n)
+		x := make([]string, n)
 		for i, v := range vals {
-			x.data[i], _ = v.(string)
+			x[i], _ = v.(string)
 		}
-		c = x
+		c = newStrCol(x, nil)
 	case "datetime":
 		x := makeCol[int64](Datetime, n)
 		for i, v := range vals {

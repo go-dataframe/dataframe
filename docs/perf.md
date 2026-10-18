@@ -8,6 +8,90 @@ given for each run); treat differences under ~1.5x as noise, and the polars
 column especially, since polars is multi-threaded too and suffers most from
 a busy machine.
 
+## Arrow-style string columns (2026-10-18)
+
+Measured with `bench/harness measure` (Go): v0.2.0 (main) and this
+change interleaved with pandas, 7 rounds, the median of each, at a load
+average under 8. Same machine and versions as the section below.
+
+<!-- TABLES -->
+
+### What changed
+
+- **String columns are stored as Arrow stores them**: the bytes of every
+  value end to end in one buffer, int32 offsets (int64 past 2 GiB), the
+  validity bitmap. A `[]string` gave the garbage collector 10^6 pointers
+  to mark per million values at every collection, and cost 16 bytes of
+  header per value; the operations table is now 30.9 MB (40.0 before,
+  pandas 34.9). Arrow IPC and Parquet string columns are read and written
+  zero-copy where the layout already matches.
+- **String kernels on that layout**: comparisons and isin with lengths
+  first; values of up to 7 bytes coded (group-by, merge, factorisation,
+  isin, Parquet dictionaries) by their packed bytes in an open-addressing
+  table, without hashing a string.
+- **Validity bitmaps are counted with go-simd/bitset's SIMD popcount.**
+  The bool <-> bitmap conversion the readers and writers need is proposed
+  to go-simd/bitset (FromBools/ToBools, go-simd/bitset#17); a local copy
+  stays until it is released.
+
+### Results unchanged
+
+All 40 golden files (`parquetio` `TestGoldenFiles`: 5 frames, IPC file,
+stream, LZ4 and Zstd, Parquet with Snappy, none, Zstd and small row
+groups) are byte-identical to v0.2.0's (`bench/harness golden`); pandas
+reads back what is written (`parquetio/testdata/check_readback.py`). The
+string column is tested against a `[]string` model at both offset widths.
+
+### The readers, against untrusted input
+
+An audit of the IPC, Parquet and CSV readers, with Go fuzz targets
+(`FuzzReadIPCFile`, `FuzzReadIPCStream`, `FuzzReadParquet`,
+`FuzzReadCSV`) and their corpora committed under `testdata/fuzz`, found
+four ways for a few bytes to make the reader allocate gigabytes or panic;
+each is now an `arrowio.ErrCorrupt`:
+
+- arrow-go allocates a slice as long as an IPC flatbuffer vector declares
+  (`make([]arrow.Field, n)` with `n` read from the input), unchecked
+  against the buffer, in streams, files and a Parquet file's
+  `ARROW:schema`: `internal/arrowfb` checks every table, vector and string
+  of the metadata first, and stream bodies are read as they arrive.
+- arrow-go reads a Parquet column chunk by allocating its declared size
+  at once: chunks are checked to lie within the file first.
+- The conversion trusted arrays' buffers and dictionary indices: they are
+  checked first (short bitmaps, offsets out of order, an index past its
+  dictionary, columns of different lengths, billions of declared null
+  rows).
+- A panic of the decoders on malformed input is returned as an error.
+
+Left to arrow-go: a Parquet row group's declared row count is reserved
+before its pages are read; a few bytes of run-length-encoded levels can
+legitimately declare billions of rows, so no bound short of one on the
+data size fits every valid file.
+
+### Parquet write: the Snappy encoder
+
+A third of the Parquet write is arrow-go's Snappy encoder,
+klauspost/compress `s2.EncodeSnappyBetter`. `bench/harness snappy` (cgo,
+the C++ snappy library pyarrow uses) compresses the bench frame's pages
+with each encoder:
+
+<!-- SNAPPY -->
+
+`golang/snappy` matches C++ snappy's ratio exactly and is 1.5x faster
+than arrow-go's encoder, which would close the gap. It cannot be used by
+our writer alone: arrow-go's row group writer creates each column's page
+writer with `file.NewPageWriter(sink, props.CompressionFor(path), ...)`,
+which looks the codec up in the process-wide registry
+(`compress.GetCodec`); `parquet.WriterProperties` carry only the
+`compress.Compression` enum and a level, `file.WriteOption` offers only
+`WithWriterProps` and `WithWriteMetadata`, and pages reach the page
+writer uncompressed (`columnWriter` calls `pager.Compress`). There is no
+per-writer codec and no way to hand over compressed pages. Likewise the
+dictionary statistics: pqarrow computes them with `compute.UniqueArray`
+over each dictionary column's indices, with no way for a caller to supply
+them. Both need a change in arrow-go (a per-writer codec option and a
+statistics hook).
+
 ## Against pandas and pyarrow, before and after (2026-10-17)
 
 Every operation with a pandas counterpart, measured on main (ed92ca8) and
@@ -159,7 +243,7 @@ The table is built identically, value for value, by `bench_test.go` and
 * memory: bytes the table holds (Go: heap growth when building it;
   pandas: `memory_usage(deep=True)`; polars: `estimated_size()`)
 
-Reproduce: `sh bench/run.sh 1000000 5 > out.txt && python3 bench/medians.py out.txt`.
+Reproduce with `bench/harness` (see "How to rerun" at the end).
 
 The runs below predate the changes of 2026-10-17 (see the section above).
 
@@ -426,17 +510,21 @@ string column is laid out once.
 
 ### How to rerun
 
+Every table on this page from 2026-10-17 on comes from `bench/harness`, a
+Go program (its own module), run from `bench/harness`:
+
 ```
-go test -c -o /tmp/arrowio.test ./arrowio
-go test -c -o /tmp/parquetio.test ./parquetio
-for i in 1 2 3 4 5 6 7; do
-  /tmp/parquetio.test -test.run '^$' -test.bench . -test.benchtime 3x
-  /tmp/arrowio.test -test.run '^$' -test.bench . -test.benchtime 3x
-  (cd arrowio/testdata &&
-    uv run --with pandas --with numpy --with pyarrow python bench_pandas.py)
-done
+go run . build -o /tmp/new ../..                  # the test binaries of a tree
+go run . build -o /tmp/main /path/to/main         # and of the one to compare
+go run . measure -rounds 7 -threads 1 -root ../.. main=/tmp/main new=/tmp/new
+go run . measure -rounds 7 -threads 0 -root ../.. main=/tmp/main new=/tmp/new
 ```
 
-For one thread each, run it with `GOMAXPROCS=1 THREADS=1` in the
-environment (`bench_pandas.py` reads `THREADS`). The operations:
-`[THREADS=1] sh bench/run.sh 1000000 7 > out.txt && python3 bench/medians.py out.txt`.
+`measure` runs each side's I/O and operation benchmarks and the pandas
+scripts (`arrowio/testdata/bench_pandas.py`, `bench/bench_pandas.py`, the
+oracle) in turn, round after round, each round only once the load average
+is under 8, and prints the medians and the ratios to pandas. `-threads 1`
+holds every side to one thread (GOMAXPROCS=1; `THREADS=1`, which the
+pandas scripts read). `golden` compares the files two builds write with
+`parquetio`'s `TestGoldenFiles`; `snappy` compares Snappy encoders on the
+bench frame's pages; `gate` runs every step of the CI workflow.

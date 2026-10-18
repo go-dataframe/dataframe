@@ -47,7 +47,7 @@ func fromAny(data any) (column, error) {
 	case []bool:
 		return newCol(Bool, d, nil), nil
 	case []string:
-		return newCol(String, d, nil), nil
+		return newStrCol(d, nil), nil
 	case []time.Time:
 		c := makeCol[int64](Datetime, len(d))
 		for i, t := range d {
@@ -169,7 +169,21 @@ func fromValues(vs []any) (column, error) {
 	case 3:
 		c = makeCol[complex128](Complex128, n)
 	case 4:
-		c = makeCol[string](String, n)
+		strs := make([]string, n)
+		valid := allValid(n)
+		missing := false
+		for i, v := range vs {
+			if v == nil {
+				valid.clear(i)
+				missing = true
+				continue
+			}
+			strs[i] = v.(string)
+		}
+		if !missing {
+			valid = nil
+		}
+		return newStrCol(strs, valid), nil
 	default:
 		c = makeCol[int64](Datetime, n)
 	}
@@ -202,8 +216,6 @@ func setBoxed(c column, i int, v any) {
 		c.data[i], _ = c.o.unbox(v)
 	case *col[complex128]:
 		c.data[i], _ = c.o.unbox(v)
-	case *col[string]:
-		c.data[i] = v.(string)
 	}
 }
 

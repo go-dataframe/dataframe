@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"slices"
 	"sync"
-	"unsafe"
 
 	"github.com/go-ndarray/ndarray"
 )
@@ -22,6 +21,8 @@ type column interface {
 	validity() bitmap
 	// take gathers the rows at idx; a negative position gives a missing row.
 	take(idx []int) column
+	// takeNonNeg is take for positions known to be none negative.
+	takeNonNeg(idx []int) column
 	slice(i, j int) column
 	// value returns the element as a Go value, nil when missing.
 	value(i int) any
@@ -77,14 +78,11 @@ type col[T comparable] struct {
 	freq   string
 }
 
-// alloc returns n zero elements of the dtype, born inside an ndarray when the
-// dtype has array storage, so that the column hands the array out without
-// copying.
+// alloc returns n zero elements of the dtype, born inside an ndarray, so
+// that the column hands the array out without copying. Every dtype col[T]
+// holds has array storage (strings live in strCol).
 func alloc[T comparable](dt DType, n int) (*ndarray.Array, []T) {
-	nd, ok := dt.storage()
-	if !ok {
-		return nil, make([]T, n)
-	}
+	nd, _ := dt.storage()
 	a, _ := ndarray.ZerosOf(nd, n)
 	return a, arrayData[T](a)
 }
@@ -171,6 +169,21 @@ func (c *col[T]) naCount() int {
 }
 
 func (c *col[T]) take(idx []int) column {
+	out := c.gather(idx)
+	out.valid = c.valid.take(idx)
+	return out
+}
+
+func (c *col[T]) takeNonNeg(idx []int) column {
+	out := c.gather(idx)
+	if c.valid != nil {
+		out.valid = c.valid.take(idx)
+	}
+	return out
+}
+
+// gather copies the values at idx, zero at a negative position.
+func (c *col[T]) gather(idx []int) *col[T] {
 	out := c.blank(len(idx))
 	parallel(len(idx), func(lo, hi int) {
 		d, src := out.data[lo:hi], c.data
@@ -180,7 +193,6 @@ func (c *col[T]) take(idx []int) column {
 			}
 		}
 	})
-	out.valid = c.valid.take(idx)
 	return out
 }
 
@@ -285,10 +297,6 @@ func (d *dict[T]) add(v T) int32 {
 
 // codeRange codes rows [lo, hi) of src into codes (-1 for missing).
 func (d *dict[T]) codeRange(src *col[T], codes []int32, lo, hi int) {
-	if sd, ok := any(d).(*dict[string]); ok {
-		codeStrings(sd, any(src).(*col[string]), codes, lo, hi)
-		return
-	}
 	for i := lo; i < hi; i++ {
 		if src.isNA(i) {
 			codes[i] = -1
@@ -296,47 +304,6 @@ func (d *dict[T]) codeRange(src *col[T], codes []int32, lo, hi int) {
 		}
 		codes[i] = d.add(src.data[i])
 	}
-}
-
-// codeStrings is codeRange for strings. Strings of a column often share
-// their bytes (one per distinct value, when they come from a dictionary or
-// a category, or were built from a few values): a small cache keyed by
-// where a string's bytes are, and how many, gives such a value its code
-// without hashing its bytes. Equal pointer and length mean equal strings.
-func codeStrings(d *dict[string], src *col[string], codes []int32, lo, hi int) {
-	var cache strCache[int32]
-	for i := lo; i < hi; i++ {
-		if !src.valid.get(i) {
-			codes[i] = -1
-			continue
-		}
-		v := src.data[i]
-		e := cache.slot(v)
-		if e.p != nil && e.p == unsafe.StringData(v) && e.n == len(v) {
-			codes[i] = e.v
-			continue
-		}
-		k := d.add(v)
-		e.p, e.n, e.v = unsafe.StringData(v), len(v), k
-		codes[i] = k
-	}
-}
-
-// strCache maps a string's bytes (address and length) to a V, for the
-// last string seen in each of its slots.
-type strCache[V any] [256]struct {
-	p *byte
-	n int
-	v V
-}
-
-func (c *strCache[V]) slot(s string) *struct {
-	p *byte
-	n int
-	v V
-} {
-	h := (uint64(uintptr(unsafe.Pointer(unsafe.StringData(s)))) ^ uint64(len(s))) * 0x9E3779B97F4A7C15
-	return &c[h>>56]
 }
 
 // code codes every row of src. A large column is coded in parallel: each
@@ -480,8 +447,6 @@ func opsOf[T comparable](dt DType) *ops[T] {
 		o = opsComplex64
 	case Complex128:
 		o = opsComplex128
-	case String:
-		o = opsString
 	case Datetime:
 		o = opsDatetime
 	default:

@@ -199,8 +199,8 @@ func TestEqualAcrossTypes(t *testing.T) {
 	if a.equal(0, b, 0) {
 		t.Error("int equals float column")
 	}
-	cat := Must(toCategory(newCol(String, []string{"u", "v"}, nil)))
-	cat2 := Must(toCategory(newCol(String, []string{"v"}, nil)))
+	cat := Must(toCategory(newStrCol([]string{"u", "v"}, nil)))
+	cat2 := Must(toCategory(newStrCol([]string{"v"}, nil)))
 	if !cat.equal(1, cat2, 0) || cat.equal(0, cat2, 0) {
 		t.Error("category equal by label")
 	}

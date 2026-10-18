@@ -13,6 +13,7 @@ import (
 
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/array"
+	"github.com/apache/arrow-go/v18/arrow/ipc"
 	"github.com/apache/arrow-go/v18/arrow/memory"
 	"github.com/go-dataframe/dataframe"
 	"github.com/go-dataframe/dataframe/internal/rawcol"
@@ -227,4 +228,62 @@ func TestDictionaryNullEntry(t *testing.T) {
 	if codes, _, _ := rawcol.Codes(s); !slices.Equal(codes, []int32{1, 0, 0}) {
 		t.Errorf("codes %v", codes)
 	}
+}
+
+// Strings in several chunks are laid out end to end, with int64 offsets
+// when they are too many bytes for int32 ones (the bound lowered here).
+func TestStringChunksBothWidths(t *testing.T) {
+	df := allTypes(t)
+	for _, bound := range []int{maxStr32, 3} {
+		old := maxStr32
+		maxStr32 = bound
+		var b bytes.Buffer
+		if err := WriteIPCStream(&b, df); err != nil {
+			t.Fatal(err)
+		}
+		rec := dataframe.Must(ReadIPCStream(bytes.NewReader(b.Bytes())))
+		two := dataframe.Must(FromRecords(mustRecord(t, df).Schema(), []arrow.RecordBatch{mustRecord(t, df), mustRecord(t, df)}))
+		maxStr32 = old
+		equalFrames(t, fmt.Sprint("stream ", bound), rec, df)
+		want := dataframe.Must(df.Column("s")).Items()
+		equalItems(t, fmt.Sprint("two batches ", bound), dataframe.Must(two.Column("s")).Items(), append(want, want...))
+	}
+}
+
+func mustRecord(t *testing.T, df *dataframe.DataFrame) arrow.RecordBatch {
+	t.Helper()
+	rec, err := ToRecord(df)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return rec
+}
+
+// A large_utf8 column read from a file keeps its int64 offsets, and is
+// written back as utf8 with the same values.
+func TestLargeStringsRoundTrip(t *testing.T) {
+	b := array.NewLargeStringBuilder(memory.DefaultAllocator)
+	defer b.Release()
+	b.AppendValues([]string{"a", "", "long value", "z"}, []bool{true, false, true, true})
+	col := b.NewArray()
+	defer col.Release()
+	schema := arrow.NewSchema([]arrow.Field{{Name: "s", Type: arrow.BinaryTypes.LargeString, Nullable: true}}, nil)
+	rec := array.NewRecordBatch(schema, []arrow.Array{col}, 4)
+	defer rec.Release()
+	var file bytes.Buffer
+	w, _ := ipc.NewFileWriter(&file, ipc.WithSchema(schema))
+	if err := w.Write(rec); err != nil {
+		t.Fatal(err)
+	}
+	w.Close()
+	df := dataframe.Must(ReadIPCFile(bytes.NewReader(file.Bytes())))
+	if _, offs, _, _ := rawcol.Strings(df.Series()[0]); fmt.Sprintf("%T", offs) != "[]int64" {
+		t.Fatalf("offsets %T, want []int64", offs)
+	}
+	var out bytes.Buffer
+	if err := WriteIPCFile(&out, df); err != nil {
+		t.Fatal(err)
+	}
+	back := dataframe.Must(ReadIPCFile(bytes.NewReader(out.Bytes())))
+	equalItems(t, "large", back.Series()[0].Items(), []any{"a", nil, "long value", "z"})
 }

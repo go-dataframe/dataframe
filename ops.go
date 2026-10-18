@@ -48,12 +48,6 @@ var (
 			return b, ok
 		},
 	}
-	opsString = &ops[string]{
-		cmp:   cmp.Compare[string],
-		str:   func(s string) string { return s },
-		box:   func(s string) any { return s },
-		unbox: func(v any) (string, bool) { s, ok := v.(string); return s, ok },
-	}
 	opsDatetime = &ops[int64]{
 		cmp:   cmp.Compare[int64],
 		str:   formatTime,

@@ -1,6 +1,10 @@
 package dataframe
 
-import "math/bits"
+import (
+	"math/bits"
+
+	"github.com/go-simd/bitset"
+)
 
 // bitmap is a validity bitmap: bit i set means element i is present. The nil
 // bitmap means every element is present, which is the common case and costs
@@ -29,11 +33,8 @@ func (b bitmap) count(n int) int {
 	if b == nil {
 		return n
 	}
-	c := 0
 	full := n >> 6
-	for _, w := range b[:full] {
-		c += bits.OnesCount64(w)
-	}
+	c := bitset.Count(b[:full]) // go-simd's SIMD popcount
 	if r := uint(n) & 63; r != 0 {
 		c += bits.OnesCount64(b[full] & (1<<r - 1))
 	}

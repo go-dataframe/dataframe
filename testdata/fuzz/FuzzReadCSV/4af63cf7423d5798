@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("0\n,InfinitY,i00,\n,Infinit0,,IN0\niN0,0")

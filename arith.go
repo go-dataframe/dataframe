@@ -200,18 +200,18 @@ func ipow(b, e int64) int64 {
 
 func concatStrings(a, b column) column {
 	n := a.len()
-	out := makeCol[string](String, n)
-	out.valid = broadcastValidity(a, b, n)
+	out := newStrBuilder(n, 0)
 	for i := range n {
 		j := i
 		if b.len() == 1 {
 			j = 0
 		}
 		if !a.isNA(i) && !b.isNA(j) {
-			out.data[i] = a.str(i) + b.str(j)
+			out.buf = append(append(out.buf, a.str(i)...), b.str(j)...)
 		}
+		out.offs = append(out.offs, int64(len(out.buf)))
 	}
-	return out
+	return out.column(broadcastValidity(a, b, n))
 }
 
 // Add returns s + other: other is a scalar or a series (aligned by label).

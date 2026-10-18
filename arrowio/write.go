@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 	"math/bits"
+	mbits "math/bits"
 	"strings"
 	"unsafe"
 
@@ -14,6 +15,7 @@ import (
 	"github.com/go-dataframe/dataframe"
 	"github.com/go-dataframe/dataframe/internal/rawcol"
 	"github.com/go-ndarray/ndarray"
+	"github.com/go-simd/bitset"
 )
 
 // ToRecord converts a frame to an Arrow record batch: one field per column,
@@ -132,7 +134,7 @@ func toArray(s *dataframe.Series, cfg *config) (arrow.Array, bool, error) {
 		t := &arrow.TimestampType{Unit: arrow.Nanosecond, TimeZone: cfg.timeZone}
 		a = fixed(t, data[int64](s), valid, n)
 	case dataframe.String, dataframe.Period:
-		a = stringArray(text(s), valid)
+		a = textArray(s, valid)
 	case dataframe.Category:
 		a = dictArray(s)
 	default:
@@ -196,13 +198,13 @@ func validityBuffer(valid []uint64, n int) (*memory.Buffer, int) {
 		return nil, 0
 	}
 	b := make([]byte, 8*len(valid))
-	present := 0
 	for i, w := range valid {
 		binary.LittleEndian.PutUint64(b[8*i:], w)
-		if r := n - 64*i; r < 64 {
-			w &= 1<<uint(r) - 1
-		}
-		present += bits.OnesCount64(w)
+	}
+	full := n >> 6
+	present := bitset.Count(valid[:full]) // go-simd's SIMD popcount
+	if r := uint(n) & 63; r != 0 {
+		present += bits.OnesCount64(valid[full] & (1<<r - 1))
 	}
 	return memory.NewBufferBytes(b), n - present
 }
@@ -251,22 +253,6 @@ func boolArray(d []bool, valid []uint64) arrow.Array {
 // take the large path without gigabytes of text.
 var largeStrings = math.MaxInt32
 
-// stringArray builds an Arrow utf8 array, or large_utf8 when the bytes
-// overflow 32-bit offsets. A missing value is written empty, whatever strs
-// holds in its slot.
-func stringArray(strs []string, valid []uint64) arrow.Array {
-	total := 0
-	for i, s := range strs {
-		if isValid(valid, i) {
-			total += len(s)
-		}
-	}
-	if total > largeStrings {
-		return offsetStrings[int64](arrow.BinaryTypes.LargeString, strs, total, valid)
-	}
-	return offsetStrings[int32](arrow.BinaryTypes.String, strs, total, valid)
-}
-
 func offsetStrings[O int32 | int64](dt arrow.DataType, strs []string, total int, valid []uint64) arrow.Array {
 	n := len(strs)
 	offs := make([]O, n+1)
@@ -285,21 +271,81 @@ func offsetStrings[O int32 | int64](dt arrow.DataType, strs []string, total int,
 
 // text returns a string series' storage, shared, or a period series'
 // values formatted.
-func text(s *dataframe.Series) []string {
-	if d, _, ok := rawcol.Strings(s); ok {
-		return d
+// textArray converts a string or period series to an Arrow array: utf8,
+// offsets from 0, missing values empty, large_utf8 past largeStrings bytes. A string series whose storage already
+// is that layout (int32 offsets from 0, an empty value in every missing
+// slot, utf8-sized) is shared rather than copied.
+func textArray(s *dataframe.Series, valid []uint64) arrow.Array {
+	if data, offs, _, ok := rawcol.Strings(s); ok {
+		if o, ok := offs.([]int32); ok && o[0] == 0 && int(o[len(o)-1]) <= largeStrings && emptyWhereMissing(o, valid) {
+			n := len(o) - 1
+			buf := unsafe.Slice(unsafe.StringData(data), int(o[n]))
+			vb, nulls := validityBuffer(valid, n)
+			ad := array.NewData(arrow.BinaryTypes.String, n, []*memory.Buffer{vb, memory.NewBufferBytes(bytesOf(o)), memory.NewBufferBytes(buf)}, nil, nulls, 0)
+			defer ad.Release()
+			return array.MakeFromData(ad)
+		}
+		switch o := offs.(type) {
+		case []int32:
+			return compactStrings(data, o, valid)
+		default:
+			return compactStrings(data, offs.([]int64), valid)
+		}
 	}
-	return s.Strings()
+	// Periods are written as their text.
+	return textArray(dataframe.Must(dataframe.NewSeriesBitmap(s.Name(), s.Strings(), valid)), valid)
+}
+
+// compactStrings lays out a string column's values afresh, as textArray
+// writes them.
+func compactStrings[O int32 | int64](data string, offs []O, valid []uint64) arrow.Array {
+	n := len(offs) - 1
+	total := 0
+	for i := range n {
+		if isValid(valid, i) {
+			total += int(offs[i+1] - offs[i])
+		}
+	}
+	if total > largeStrings {
+		return compactInto[O, int64](arrow.BinaryTypes.LargeString, data, offs, valid, total)
+	}
+	return compactInto[O, int32](arrow.BinaryTypes.String, data, offs, valid, total)
+}
+
+func compactInto[O, P int32 | int64](dt arrow.DataType, data string, offs []O, valid []uint64, total int) arrow.Array {
+	n := len(offs) - 1
+	out := make([]P, n+1)
+	buf := make([]byte, 0, total)
+	for i := range n {
+		if isValid(valid, i) {
+			buf = append(buf, data[offs[i]:offs[i+1]]...)
+		}
+		out[i+1] = P(len(buf))
+	}
+	vb, nulls := validityBuffer(valid, n)
+	ad := array.NewData(dt, n, []*memory.Buffer{vb, memory.NewBufferBytes(bytesOf(out)), memory.NewBufferBytes(buf)}, nil, nulls, 0)
+	defer ad.Release()
+	return array.MakeFromData(ad)
+}
+
+// emptyWhereMissing reports whether every value valid marks missing is
+// empty.
+func emptyWhereMissing(offs []int32, valid []uint64) bool {
+	n := len(offs) - 1
+	for w, bits := range valid {
+		for bits != math.MaxUint64 {
+			b := mbits.TrailingZeros64(^bits)
+			bits |= 1 << uint(b)
+			if i := w<<6 + b; i < n && offs[i] != offs[i+1] {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // bitsSet counts the set bits of a bitmap.
-func bitsSet(v []uint64) int {
-	n := 0
-	for _, w := range v {
-		n += bits.OnesCount64(w)
-	}
-	return n
-}
+func bitsSet(v []uint64) int { return bitset.Count(v) }
 
 // dictType is the Arrow type of a category column.
 var dictType = &arrow.DictionaryType{IndexType: arrow.PrimitiveTypes.Int32, ValueType: arrow.BinaryTypes.String}

@@ -21,6 +21,11 @@ var (
 	// ErrMetadata reports "pandas" schema metadata that does not parse or
 	// names columns the data lacks.
 	ErrMetadata = errors.New("arrowio: bad pandas metadata")
+	// ErrCorrupt reports Arrow data that is not what it declares: buffers
+	// shorter than the values they hold, offsets out of order or out of
+	// bounds, a dictionary index past its dictionary, columns of
+	// different lengths, or a decoder that failed on it.
+	ErrCorrupt = errors.New("arrowio: corrupt data")
 )
 
 // Compression selects the codec of an Arrow IPC file or stream. The Arrow
