@@ -15,6 +15,7 @@ import (
 	"github.com/go-dataframe/dataframe"
 	"github.com/go-dataframe/dataframe/internal/rawcol"
 	"github.com/go-ndarray/ndarray"
+	"github.com/go-simd/bitset"
 )
 
 // ToRecord converts a frame to an Arrow record batch: one field per column,
@@ -197,13 +198,13 @@ func validityBuffer(valid []uint64, n int) (*memory.Buffer, int) {
 		return nil, 0
 	}
 	b := make([]byte, 8*len(valid))
-	present := 0
 	for i, w := range valid {
 		binary.LittleEndian.PutUint64(b[8*i:], w)
-		if r := n - 64*i; r < 64 {
-			w &= 1<<uint(r) - 1
-		}
-		present += bits.OnesCount64(w)
+	}
+	full := n >> 6
+	present := bitset.Count(valid[:full]) // go-simd's SIMD popcount
+	if r := uint(n) & 63; r != 0 {
+		present += bits.OnesCount64(valid[full] & (1<<r - 1))
 	}
 	return memory.NewBufferBytes(b), n - present
 }
@@ -344,13 +345,7 @@ func emptyWhereMissing(offs []int32, valid []uint64) bool {
 }
 
 // bitsSet counts the set bits of a bitmap.
-func bitsSet(v []uint64) int {
-	n := 0
-	for _, w := range v {
-		n += bits.OnesCount64(w)
-	}
-	return n
-}
+func bitsSet(v []uint64) int { return bitset.Count(v) }
 
 // dictType is the Arrow type of a category column.
 var dictType = &arrow.DictionaryType{IndexType: arrow.PrimitiveTypes.Int32, ValueType: arrow.BinaryTypes.String}

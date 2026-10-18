@@ -6,6 +6,8 @@ require (
 	github.com/apache/arrow-go/v18 v18.8.0
 	github.com/go-ndarray/ndarray v0.12.0
 	github.com/go-plot/plot v0.1.1
+	github.com/go-simd/bitset v0.0.0-20261011011059-85b8330ff3d4
+	github.com/google/flatbuffers v25.12.19+incompatible
 )
 
 require (
@@ -18,7 +20,6 @@ require (
 	github.com/go-tex/math v0.50.0 // indirect
 	github.com/go-widgets/painter v0.15.0 // indirect
 	github.com/goccy/go-json v0.10.6 // indirect
-	github.com/google/flatbuffers v25.12.19+incompatible // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/klauspost/compress v1.19.2 // indirect
 	github.com/klauspost/cpuid/v2 v2.4.0 // indirect
@@ -27,7 +28,7 @@ require (
 	golang.org/x/exp v0.0.0-20260112195511-716be5621a96 // indirect
 	golang.org/x/net v0.60.0 // indirect
 	golang.org/x/sync v0.23.0 // indirect
-	golang.org/x/sys v0.48.0 // indirect
+	golang.org/x/sys v0.49.0 // indirect
 	golang.org/x/text v0.42.0 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260526163538-3dc84a4a5aaa // indirect
 	google.golang.org/grpc v1.83.2 // indirect
