@@ -4,13 +4,16 @@
 // drifts slows every side alike. It prints the median of each operation
 // over the rounds, in milliseconds, and each side's ratio to pandas.
 //
-// Build the test binaries of each tree first, then run from the
-// repository root:
+// Build the test binaries of each tree first, then measure, from
+// bench/harness:
 //
-//	go test -c -o /tmp/new/df.test . && go test -c -o /tmp/new/parquetio.test ./parquetio &&
-//	    go test -c -o /tmp/new/arrowio.test ./arrowio
-//	(the same into /tmp/main from a checkout of main)
-//	cd bench/harness && go run . measure -rounds 7 -threads 1 main=/tmp/main new=/tmp/new
+//	go run . build -o /tmp/new ../..
+//	go run . build -o /tmp/main /path/to/a/checkout/of/main
+//	go run . measure -rounds 7 -threads 1 -root ../.. main=/tmp/main new=/tmp/new
+//
+// Each round starts only once the load average is under -maxload (8 by
+// default): a loaded host measures the load, not the code. waitload waits
+// for that alone.
 //
 // With golden instead of measure, it compares the files two builds wrote
 // with TestGoldenFiles (parquetio), see golden.go:
@@ -34,6 +37,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // ops are the operations reported, in order, with the Go benchmark that
@@ -67,6 +71,10 @@ func main() {
 	switch os.Args[1] {
 	case "measure":
 		measure(os.Args[2:])
+	case "waitload":
+		waitCmd(os.Args[2:])
+	case "build":
+		buildCmd(os.Args[2:])
 	case "gate":
 		if len(os.Args) != 3 {
 			fail("usage: harness gate dir")
@@ -94,6 +102,7 @@ func measure(args []string) {
 	threads := flag.Int("threads", 1, "1: every side on one thread; 0: defaults")
 	root := flag.String("root", "../..", "the repository, for the pandas scripts")
 	uv := flag.String("uv", "uv", "the uv command that runs the pandas scripts")
+	maxLoad := flag.Float64("maxload", 8, "start each round only below this load average (0: never wait)")
 	flag.Parse(args)
 	type side struct{ name, dir string }
 	var sides []side
@@ -120,7 +129,10 @@ func measure(args []string) {
 	}
 	fmt.Fprintln(os.Stderr, "load before:", load())
 	for r := range *rounds {
-		fmt.Fprintf(os.Stderr, "round %d/%d\n", r+1, *rounds)
+		if *maxLoad > 0 && !waitLoad(*maxLoad, 2*time.Hour) {
+			fail("the host did not become quiet enough to measure")
+		}
+		fmt.Fprintf(os.Stderr, "round %d/%d, %s\n", r+1, *rounds, load())
 		for _, s := range sides {
 			for _, run := range []struct{ bin, pattern string }{
 				{"parquetio.test", "."}, {"arrowio.test", "."}, {"df.test", opBenchmarks},
@@ -220,6 +232,9 @@ func median(v []float64) float64 {
 func runCmd(env []string, dir, name string, args ...string) string {
 	cmd := exec.Command(name, args...)
 	cmd.Env, cmd.Dir = env, dir
+	// An empty stdin: a program that reads it (an oracle waiting for
+	// input) meets EOF at once and exits instead of hanging.
+	cmd.Stdin = strings.NewReader("")
 	var out, errb bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &errb
 	if err := cmd.Run(); err != nil {
